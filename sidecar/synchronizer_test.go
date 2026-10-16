@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -76,6 +77,31 @@ func testBundle(t *testing.T, sequence int64) (Configuration, string) {
 }
 
 func pointer(value string) *string { return &value }
+
+func TestAcceptsServerSignedConfiguration(t *testing.T) {
+	// Fixture produced by the server's rail-bundle encoder and Node signer.
+	data, err := os.ReadFile("testdata/server-configuration.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Pin           string        `json:"pin"`
+		Configuration Configuration `json:"configuration"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := verifyConfiguration(fixture.Configuration,
+		organisationID, deploymentID, map[string]struct{}{fixture.Pin: {}},
+		time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("server-signed configuration was rejected: %v", err)
+	}
+	if manifest == nil || manifest.BundleID != bundleID ||
+		manifest.Sequence != 1 || len(manifest.Rails) != 1 {
+		t.Fatalf("server manifest was not read exactly: %+v", manifest)
+	}
+}
 
 func testOptions(endpoint, file, fingerprint string) Options {
 	return Options{ControlPlaneURL: endpoint, Token: "test-credential",
@@ -223,6 +249,36 @@ func TestConfigurationRequiresExplicitTrustAndLoopbackForHTTP(t *testing.T) {
 	if _, err := NewSynchronizer(testOptions("http://example.com", filepath.Join(t.TempDir(), "state"),
 		fingerprint)); err == nil {
 		t.Fatal("remote plaintext HTTP accepted")
+	}
+}
+
+func TestConfigurationRedirectDoesNotForwardDeploymentCredential(t *testing.T) {
+	var targetReached atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		targetReached.Store(true)
+		if r.Header.Get("Authorization") != "" {
+			t.Error("deployment credential reached the redirect target")
+		}
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-credential" {
+			t.Error("initial request did not authenticate")
+		}
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+	_, fingerprint := testBundle(t, 1)
+	syncer, err := NewSynchronizer(testOptions(redirect.URL,
+		filepath.Join(t.TempDir(), "private", "state.json"), fingerprint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.Sync(context.Background()); err == nil {
+		t.Fatal("redirected configuration was accepted")
+	}
+	if targetReached.Load() {
+		t.Fatal("configuration request followed a redirect")
 	}
 }
 

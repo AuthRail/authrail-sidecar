@@ -70,6 +70,12 @@ func NewSynchronizer(options Options) (*Synchronizer, error) {
 	if options.Client == nil {
 		options.Client = &http.Client{Timeout: 10 * time.Second}
 	}
+	client := *options.Client
+	// A deployment credential must never follow a control-plane redirect.
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	options.Client = &client
 	if options.Now == nil {
 		options.Now = time.Now
 	}
