@@ -29,11 +29,19 @@ deployment credential.
 
 ## Decision boundary
 
-The decision path will use one Runtime protocol across adapters. The sidecar
-will evaluate the active Rails; the adapter will apply the response at the
-tool or workflow boundary. The protected executor keeps provider credentials
-and performs the operation. AuthRail retains deployment management, approval,
-and decision history.
+A local adapter can send a tool call or result to `/evaluate` with the exact
+Operation Version, a request ID, and the action fields. A separate adapter
+secret protects this loopback endpoint. The deployment credential is used only
+for configuration sync.
 
-This branch does not yet expose a decision endpoint or evaluate actions. Its
-health response reports `configuration_only` coverage.
+The sidecar checks the current signed bundle and evaluates its Guard and Policy
+rules for that Operation. A Guard can deny or clear its boundary; only a Policy
+can allow the business action. Missing trusted facts, identity, or trajectory
+state remain unresolved. An unselected Operation is reported as uncovered.
+Every response says `mode: observe` and `enforced: false`; the adapter must not
+treat it as permission or a block. The protected executor owns provider
+credentials and performs the operation.
+
+This endpoint does not yet send an Action or Decision Certificate to AuthRail.
+No adapter is shipped in this repository yet. `/health` still reports
+configuration coverage; it does not claim that calls are intercepted.

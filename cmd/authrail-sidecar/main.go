@@ -57,6 +57,13 @@ func main() {
 		writer.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(writer).Encode(synchronizer.Snapshot())
 	})
+	if adapterToken := os.Getenv("AUTHRAIL_ADAPTER_TOKEN"); adapterToken != "" {
+		if len(adapterToken) < 32 {
+			listener.Close()
+			log.Fatal("AUTHRAIL_ADAPTER_TOKEN must have at least 32 characters")
+		}
+		mux.Handle("POST /evaluate", sidecar.EvaluationHandler(synchronizer, adapterToken))
+	}
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
