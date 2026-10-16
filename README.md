@@ -37,7 +37,9 @@ trusted setup channel; do not take it from the bundle being verified.
 The health endpoint is available at `http://127.0.0.1:7078/health`. Set
 `AUTHRAIL_ADAPTER_TOKEN` to a random value of at least 32 characters to enable
 `POST http://127.0.0.1:7078/evaluate` for an adapter on the same host. Send it
-as a Bearer token. Keep it separate from the deployment credential. The
+as a Bearer token, along with a stable `Idempotency-Key` for the action. Keep it
+separate from the deployment credential. The key is checked for a valid shape;
+this endpoint does not yet store or deduplicate Actions. The
 sidecar checks for updated Rails every five seconds. `AUTHRAIL_HEALTH_ADDR`
 and `AUTHRAIL_SYNC_INTERVAL` change those defaults; the listener must stay on
 loopback.

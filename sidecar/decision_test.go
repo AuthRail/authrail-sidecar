@@ -160,6 +160,14 @@ func TestLocalEvaluationEndpointRequiresAdapterToken(t *testing.T) {
 	}
 	request = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
 	request.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	missingKey := httptest.NewRecorder()
+	handler.ServeHTTP(missingKey, request)
+	if missingKey.Code != http.StatusBadRequest {
+		t.Fatalf("missing action key: %d", missingKey.Code)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	request.Header.Set("Idempotency-Key", "invoice-123")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {

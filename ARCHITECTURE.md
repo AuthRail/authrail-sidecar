@@ -31,8 +31,9 @@ deployment credential.
 
 A local adapter can send a tool call or result to `/evaluate` with the exact
 Operation Version, a request ID, and the action fields. A separate adapter
-secret protects this loopback endpoint. The deployment credential is used only
-for configuration sync.
+secret protects this loopback endpoint. A caller-supplied action key travels
+in the `Idempotency-Key` header; durable deduplication is not implemented yet.
+The deployment credential is used only for configuration sync.
 
 The sidecar checks the current signed bundle and evaluates its Guard and Policy
 rules for that Operation. A Guard can deny or clear its boundary; only a Policy

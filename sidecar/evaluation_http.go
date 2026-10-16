@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
+
+var actionKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 // EvaluationHandler accepts only requests from the protected local adapter.
 // The deployment credential is never accepted on this listener.
@@ -18,9 +21,15 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			return
 		}
 		supplied := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") ||
+		if len(r.Header.Values("Authorization")) != 1 ||
+			!strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") ||
 			subtle.ConstantTimeCompare([]byte(supplied), []byte(adapterToken)) != 1 {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if len(r.Header.Values("Idempotency-Key")) != 1 ||
+			!actionKeyPattern.MatchString(r.Header.Get("Idempotency-Key")) {
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
