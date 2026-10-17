@@ -51,7 +51,9 @@ loopback.
 
 Create an Ed25519 key pair for the protected application. Give the sidecar only
 the PEM public key; keep the private key in the application, outside the agent's
-reach. When `AUTHRAIL_ADAPTER_TOKEN` enables `/evaluate`, the public key file is
+reach. Register that public key on the deployment page in AuthRail before
+sending signed reports, and use the same key in the sidecar. When
+`AUTHRAIL_ADAPTER_TOKEN` enables `/evaluate`, the public key file is
 required. Each check carries a short-lived signature over the organisation and
 deployment IDs, Operation Version, action key, phase, input digest, and the
 principal, session, and resource references. The sidecar rejects missing,
@@ -59,6 +61,13 @@ expired, or changed assertions before checking Rails. Derive those references
 from your application's authenticated session and resource lookup. A signature
 shows which application key asserted them; it does not authenticate the person
 on its own.
+The local `/health` response shows `executorKeySha256`; compare it with the
+fingerprint on the deployment page to confirm the sidecar loaded the same
+public key. This is configuration evidence, not proof of interception.
+Registration accepts one key per deployment in this slice. Drain pending
+Observe reports before registration; older reports without a signed assertion
+cannot be verified against the newly registered key. Key replacement needs a
+separate rotation flow and is not available on this setup page yet.
 
 **Current build:** the local endpoint evaluates calls and results against the
 active signed Rails in Observe mode. It reports what the Rails would decide,

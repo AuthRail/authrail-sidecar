@@ -52,10 +52,15 @@ treat it as permission or a block. The protected executor owns provider
 credentials and performs the operation.
 
 For a covered call or result, the sidecar sends the evaluated outcome, exact
-bundle and rule references, and a digest of canonicalized input to AuthRail.
+bundle and rule references, a digest of canonicalized input, and the signed
+executor assertion to AuthRail. The assertion contains references and digests,
+not the tool input or result. AuthRail verifies it against the public key
+registered for that deployment before recording a verified signature claim.
 Raw action fields and tool results stay local. The AuthRail server retains an
 idempotent Action and signs a certificate explicitly marked as a
-deployment-reported Observe result. Before upload, the sidecar saves the bounded
+deployment-reported Observe result. Signature verification does not independently
+authenticate a person, resolve a resource, or prove execution. Before upload,
+the sidecar saves the bounded
 metadata-only report in a private queue beside its state file. It retries queued
 reports after restart and periodically while running. A failed upload leaves
 the local response marked `recordingStatus: queued`; a failed queue write is

@@ -27,6 +27,7 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 		var body struct {
 			InputSHA256          string               `json:"inputSha256"`
 			IdentityVerification IdentityVerification `json:"identityVerification"`
+			ExecutorProof        IdentityProof        `json:"executorProof"`
 			Report               struct {
 				Evaluation Evaluation `json:"evaluation"`
 			} `json:"report"`
@@ -49,6 +50,7 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 		if body.InputSHA256 != hex.EncodeToString(expected[:]) ||
 			len(body.IdentityVerification.KeySHA256) != 64 ||
 			len(body.IdentityVerification.SignatureSHA256) != 64 ||
+			body.ExecutorProof.Signature == "" ||
 			body.Report.Evaluation.Outcome != "allow" || body.Report.Evaluation.Enforced {
 			t.Errorf("incorrect advisory report: %+v", body)
 		}

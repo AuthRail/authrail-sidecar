@@ -3,6 +3,8 @@ package sidecar
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,15 +32,16 @@ type Options struct {
 }
 
 type Snapshot struct {
-	Sequence       int64      `json:"sequence"`
-	ActiveBundleID *string    `json:"activeBundleId"`
-	Mode           string     `json:"mode"`
-	BundleValid    bool       `json:"bundleValid"`
-	Coverage       string     `json:"coverage"`
-	SyncStatus     string     `json:"syncStatus"`
-	LastSyncAt     *time.Time `json:"lastSyncAt,omitempty"`
-	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
-	PendingReports int        `json:"pendingReports"`
+	Sequence          int64      `json:"sequence"`
+	ActiveBundleID    *string    `json:"activeBundleId"`
+	Mode              string     `json:"mode"`
+	BundleValid       bool       `json:"bundleValid"`
+	Coverage          string     `json:"coverage"`
+	SyncStatus        string     `json:"syncStatus"`
+	LastSyncAt        *time.Time `json:"lastSyncAt,omitempty"`
+	ExpiresAt         *time.Time `json:"expiresAt,omitempty"`
+	PendingReports    int        `json:"pendingReports"`
+	ExecutorKeySHA256 string     `json:"executorKeySha256,omitempty"`
 }
 
 type diskState struct {
@@ -214,6 +217,10 @@ func (s *Synchronizer) Snapshot() Snapshot {
 	result := Snapshot{Sequence: s.state.Floor, Mode: "observe",
 		Coverage: "configuration_only", SyncStatus: s.status,
 		LastSyncAt: s.lastSync}
+	if len(s.options.ExecutorPublicKey) == ed25519.PublicKeySize {
+		digest := sha256.Sum256(s.options.ExecutorPublicKey)
+		result.ExecutorKeySHA256 = hex.EncodeToString(digest[:])
+	}
 	s.observeMu.Lock()
 	result.PendingReports = len(s.observeQueue.Entries)
 	s.observeMu.Unlock()

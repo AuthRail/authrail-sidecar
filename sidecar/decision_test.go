@@ -284,6 +284,11 @@ func TestLoadExecutorPublicKeyRequiresEd25519PEM(t *testing.T) {
 	if _, err := LoadExecutorPublicKey(path); err == nil {
 		t.Fatal("invalid executor public key accepted")
 	}
+	syncer := decisionSynchronizer(t, nil)
+	digest := sha256.Sum256(syncer.options.ExecutorPublicKey)
+	if syncer.Snapshot().ExecutorKeySHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatal("sidecar health hid or changed the configured executor key fingerprint")
+	}
 }
 
 func TestObserveApprovalAndResultCoverage(t *testing.T) {

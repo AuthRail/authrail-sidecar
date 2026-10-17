@@ -38,13 +38,15 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 		InputSHA256          string               `json:"inputSha256"`
 		Attribution          Attribution          `json:"attribution"`
 		IdentityVerification IdentityVerification `json:"identityVerification"`
+		ExecutorProof        IdentityProof        `json:"executorProof"`
 		Report               struct {
 			OperationVersionID string     `json:"operationVersionId"`
 			Phase              string     `json:"phase"`
 			Evaluation         Evaluation `json:"evaluation"`
 		} `json:"report"`
 	}{FormatVersion: 1, InputSHA256: hex.EncodeToString(digest[:]),
-		Attribution: request.Attribution, IdentityVerification: s.identityVerification(request), Report: struct {
+		Attribution: request.Attribution, IdentityVerification: s.identityVerification(request),
+		ExecutorProof: request.IdentityProof, Report: struct {
 			OperationVersionID string     `json:"operationVersionId"`
 			Phase              string     `json:"phase"`
 			Evaluation         Evaluation `json:"evaluation"`

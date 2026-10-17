@@ -3,7 +3,9 @@ package sidecar
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -218,18 +220,25 @@ func validateQueuedObserveBody(body []byte) error {
 		return errors.New("Observe report is invalid")
 	}
 	var value map[string]json.RawMessage
-	if json.Unmarshal(body, &value) != nil || (len(value) != 4 && len(value) != 5) ||
+	if json.Unmarshal(body, &value) != nil ||
+		(len(value) != 4 && len(value) != 5 && len(value) != 6) ||
 		value["formatVersion"] == nil || value["inputSha256"] == nil ||
 		value["attribution"] == nil || value["report"] == nil {
 		return errors.New("Observe report is invalid")
 	}
-	if len(value) == 5 && value["identityVerification"] == nil {
+	if len(value) >= 5 && value["identityVerification"] == nil {
 		return errors.New("Observe report is invalid")
 	}
-	if len(value) == 5 && bytes.Equal(value["identityVerification"], []byte("null")) {
+	if len(value) == 6 && value["executorProof"] == nil {
 		return errors.New("Observe report is invalid")
 	}
-	if len(value) == 5 {
+	if len(value) >= 5 && bytes.Equal(value["identityVerification"], []byte("null")) {
+		return errors.New("Observe report is invalid")
+	}
+	if len(value) == 6 && bytes.Equal(value["executorProof"], []byte("null")) {
+		return errors.New("Observe report is invalid")
+	}
+	if len(value) >= 5 {
 		var identityKeys map[string]json.RawMessage
 		if json.Unmarshal(value["identityVerification"], &identityKeys) != nil ||
 			len(identityKeys) != 2 || identityKeys["keySha256"] == nil ||
@@ -247,6 +256,7 @@ func stableObserveFingerprint(body []byte) (string, error) {
 		InputSHA256          string                `json:"inputSha256"`
 		Attribution          Attribution           `json:"attribution"`
 		IdentityVerification *IdentityVerification `json:"identityVerification"`
+		ExecutorProof        *IdentityProof        `json:"executorProof"`
 		Report               struct {
 			OperationVersionID string `json:"operationVersionId"`
 			Phase              string `json:"phase"`
@@ -265,6 +275,9 @@ func stableObserveFingerprint(body []byte) (string, error) {
 		return "", errors.New("Observe digest is invalid")
 	}
 	if value.IdentityVerification != nil {
+		if value.ExecutorProof != nil && value.ExecutorProof.Signature == "" {
+			return "", errors.New("Observe identity proof is invalid")
+		}
 		if len(value.IdentityVerification.KeySHA256) != 64 ||
 			len(value.IdentityVerification.SignatureSHA256) != 64 {
 			return "", errors.New("Observe identity verification is invalid")
@@ -274,6 +287,19 @@ func stableObserveFingerprint(body []byte) (string, error) {
 		}
 		if _, err := hex.DecodeString(value.IdentityVerification.SignatureSHA256); err != nil {
 			return "", errors.New("Observe identity verification is invalid")
+		}
+		if value.ExecutorProof != nil {
+			proof := value.ExecutorProof
+			signature, err := base64.RawURLEncoding.DecodeString(proof.Signature)
+			if err != nil || len(signature) != ed25519.SignatureSize ||
+				proof.IssuedAt <= 0 || proof.ExpiresAt <= proof.IssuedAt ||
+				proof.ExpiresAt-proof.IssuedAt > 60 {
+				return "", errors.New("Observe identity proof is invalid")
+			}
+			digest := sha256.Sum256(signature)
+			if value.IdentityVerification.SignatureSHA256 != hex.EncodeToString(digest[:]) {
+				return "", errors.New("Observe identity proof digest is invalid")
+			}
 		}
 	}
 	identityKeySHA256 := ""
