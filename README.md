@@ -29,6 +29,7 @@ and deployment IDs, trusted signing-key fingerprint, and a durable state path:
 | `AUTHRAIL_TRUSTED_KEY_SHA256` | Trusted signing-key fingerprint |
 | `AUTHRAIL_STATE_FILE` | File path for local state |
 | `AUTHRAIL_ADAPTER_TOKEN` | Separate secret shared with your local adapter to enable Observe checks |
+| `AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE` | PEM Ed25519 public key for assertions signed by your protected application |
 
 Keep the credential away from the agent and its tools. Keep the state file and
 its adjacent `.observations` retry file on private storage that survives
@@ -47,6 +48,17 @@ AuthRail uses it to recognize a retry of the same action. The
 sidecar checks for updated Rails every five seconds. `AUTHRAIL_HEALTH_ADDR`
 and `AUTHRAIL_SYNC_INTERVAL` change those defaults; the listener must stay on
 loopback.
+
+Create an Ed25519 key pair for the protected application. Give the sidecar only
+the PEM public key; keep the private key in the application, outside the agent's
+reach. When `AUTHRAIL_ADAPTER_TOKEN` enables `/evaluate`, the public key file is
+required. Each check carries a short-lived signature over the organisation and
+deployment IDs, Operation Version, action key, phase, input digest, and the
+principal, session, and resource references. The sidecar rejects missing,
+expired, or changed assertions before checking Rails. Derive those references
+from your application's authenticated session and resource lookup. A signature
+shows which application key asserted them; it does not authenticate the person
+on its own.
 
 **Current build:** the local endpoint evaluates calls and results against the
 active signed Rails in Observe mode. It reports what the Rails would decide,

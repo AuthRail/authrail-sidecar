@@ -3,6 +3,7 @@ package sidecar
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,9 +89,34 @@ func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
 	}
 	return &Synchronizer{options: Options{OrganisationID: organisationID,
 		DeploymentID: deploymentID, TrustedPins: map[string]struct{}{config.Bundle.VerificationKey.SHA256: {}},
-		StateFile: filepath.Join(stateDir, "state.json"), Now: func() time.Time { return now }},
+		ExecutorPublicKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey),
+		StateFile:         filepath.Join(stateDir, "state.json"), Now: func() time.Time { return now }},
 		state: diskState{FormatVersion: 1, OrganisationID: organisationID,
 			DeploymentID: deploymentID, Floor: 1, Current: &config}}
+}
+
+func signedCall(t *testing.T, syncer *Synchronizer, request EvaluationRequest, actionKey string) EvaluationRequest {
+	t.Helper()
+	input, err := observeInputBytes(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(input)
+	now := syncer.options.Now().Unix()
+	request.IdentityProof = IdentityProof{IssuedAt: now, ExpiresAt: now + 30}
+	statement := identityStatement{Type: "authrail.observe.executor.v1",
+		OrganisationID: syncer.options.OrganisationID, DeploymentID: syncer.options.DeploymentID,
+		RequestID: request.RequestID, ActionKey: actionKey,
+		OperationVersionID: request.OperationVersionID, Phase: request.Phase,
+		InputSHA256: hex.EncodeToString(digest[:]), Attribution: request.Attribution,
+		IssuedAt: now, ExpiresAt: now + 30}
+	message, err := json.Marshal(statement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.IdentityProof.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(
+		ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), message))
+	return request
 }
 
 func call(amount int) EvaluationRequest {
@@ -155,9 +182,10 @@ func TestLocalEvaluationEndpointRequiresAdapterToken(t *testing.T) {
 		"00000000-0000-4000-8000-000000000011", "guard", []map[string]any{{
 			"id": "large", "phase": "tool_call", "when": decisionCondition("gt", 100),
 			"outcome": "deny", "reason": "Too large"}})
-	handler := EvaluationHandler(decisionSynchronizer(t, []map[string]any{guard}),
+	syncer := decisionSynchronizer(t, []map[string]any{guard})
+	handler := EvaluationHandler(syncer,
 		"abcdefghijklmnopqrstuvwxyz012345")
-	body, _ := json.Marshal(call(101))
+	body, _ := json.Marshal(signedCall(t, syncer, call(101), "invoice-123"))
 	request := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
 	unauthorized := httptest.NewRecorder()
 	handler.ServeHTTP(unauthorized, request)
@@ -170,6 +198,15 @@ func TestLocalEvaluationEndpointRequiresAdapterToken(t *testing.T) {
 	handler.ServeHTTP(missingKey, request)
 	if missingKey.Code != http.StatusBadRequest {
 		t.Fatalf("missing action key: %d", missingKey.Code)
+	}
+	unsigned, _ := json.Marshal(call(101))
+	request = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(unsigned))
+	request.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	request.Header.Set("Idempotency-Key", "invoice-123")
+	missingProof := httptest.NewRecorder()
+	handler.ServeHTTP(missingProof, request)
+	if missingProof.Code != http.StatusUnauthorized {
+		t.Fatalf("missing executor proof: %d", missingProof.Code)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
 	request.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
@@ -188,6 +225,64 @@ func TestLocalEvaluationEndpointRequiresAdapterToken(t *testing.T) {
 	malformed.Arguments = json.RawMessage(`{"amount":101} {"amount":1}`)
 	if _, err := decisionSynchronizer(t, []map[string]any{guard}).Evaluate(malformed); err == nil {
 		t.Fatal("malformed action accepted")
+	}
+}
+
+func TestExecutorProofRejectsSpoofedIdentityAndReplay(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	signed := signedCall(t, syncer, call(50), "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	changed := signed
+	changed.Attribution.PrincipalID = "other_staff"
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed principal passed executor proof")
+	}
+	changed = signed
+	changed.Arguments = json.RawMessage(`{"amount":500}`)
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed input passed executor proof")
+	}
+	changed = signed
+	changed.Phase = "tool_result"
+	changed.Result = json.RawMessage(`{"status":"done"}`)
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed phase passed executor proof")
+	}
+	if syncer.verifyIdentityProof(signed, "different-action") == nil {
+		t.Fatal("changed action key passed executor proof")
+	}
+	syncer.options.DeploymentID = "00000000-0000-4000-8000-000000000099"
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("different deployment accepted proof")
+	}
+	syncer.options.DeploymentID = deploymentID
+	syncer.options.Now = func() time.Time { return time.Unix(signed.IdentityProof.ExpiresAt, 0) }
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("expired proof was accepted")
+	}
+}
+
+func TestLoadExecutorPublicKeyRequiresEd25519PEM(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "executor.pub")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadExecutorPublicKey(path)
+	if err != nil || !bytes.Equal(loaded, key) {
+		t.Fatalf("valid executor public key rejected: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("not a key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadExecutorPublicKey(path); err == nil {
+		t.Fatal("invalid executor public key accepted")
 	}
 }
 

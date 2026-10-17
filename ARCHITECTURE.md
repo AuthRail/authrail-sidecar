@@ -31,8 +31,13 @@ deployment credential.
 
 A local adapter can send a tool call or result to `/evaluate` with the exact
 Operation Version, a request ID, opaque principal and session references, an
-optional resource reference, and the action fields. These references are
-attributed to the adapter; they do not establish verified principal identity.
+optional resource reference, and the action fields. The protected executor
+signs a short-lived assertion that binds these references to the deployment,
+action key, phase, and canonical input digest. The sidecar verifies the
+configured Ed25519 public key before evaluating or retaining a report. The
+protected application must authenticate its own principal and resolve its
+resource before signing. This proof establishes that its key asserted the
+references; it does not independently authenticate the person or prove execution.
 A separate adapter
 secret protects this loopback endpoint. A caller-supplied action key travels
 in the `Idempotency-Key` header. The deployment credential authenticates both

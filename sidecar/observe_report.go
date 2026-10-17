@@ -34,16 +34,17 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 	}
 	digest := sha256.Sum256(input)
 	body, err := json.Marshal(struct {
-		FormatVersion int         `json:"formatVersion"`
-		InputSHA256   string      `json:"inputSha256"`
-		Attribution   Attribution `json:"attribution"`
-		Report        struct {
+		FormatVersion        int                  `json:"formatVersion"`
+		InputSHA256          string               `json:"inputSha256"`
+		Attribution          Attribution          `json:"attribution"`
+		IdentityVerification IdentityVerification `json:"identityVerification"`
+		Report               struct {
 			OperationVersionID string     `json:"operationVersionId"`
 			Phase              string     `json:"phase"`
 			Evaluation         Evaluation `json:"evaluation"`
 		} `json:"report"`
 	}{FormatVersion: 1, InputSHA256: hex.EncodeToString(digest[:]),
-		Attribution: request.Attribution, Report: struct {
+		Attribution: request.Attribution, IdentityVerification: s.identityVerification(request), Report: struct {
 			OperationVersionID string     `json:"operationVersionId"`
 			Phase              string     `json:"phase"`
 			Evaluation         Evaluation `json:"evaluation"`

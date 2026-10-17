@@ -218,10 +218,24 @@ func validateQueuedObserveBody(body []byte) error {
 		return errors.New("Observe report is invalid")
 	}
 	var value map[string]json.RawMessage
-	if json.Unmarshal(body, &value) != nil || len(value) != 4 ||
+	if json.Unmarshal(body, &value) != nil || (len(value) != 4 && len(value) != 5) ||
 		value["formatVersion"] == nil || value["inputSha256"] == nil ||
 		value["attribution"] == nil || value["report"] == nil {
 		return errors.New("Observe report is invalid")
+	}
+	if len(value) == 5 && value["identityVerification"] == nil {
+		return errors.New("Observe report is invalid")
+	}
+	if len(value) == 5 && bytes.Equal(value["identityVerification"], []byte("null")) {
+		return errors.New("Observe report is invalid")
+	}
+	if len(value) == 5 {
+		var identityKeys map[string]json.RawMessage
+		if json.Unmarshal(value["identityVerification"], &identityKeys) != nil ||
+			len(identityKeys) != 2 || identityKeys["keySha256"] == nil ||
+			identityKeys["signatureSha256"] == nil {
+			return errors.New("Observe identity verification is invalid")
+		}
 	}
 	_, err := stableObserveFingerprint(body)
 	return err
@@ -229,10 +243,11 @@ func validateQueuedObserveBody(body []byte) error {
 
 func stableObserveFingerprint(body []byte) (string, error) {
 	var value struct {
-		FormatVersion int         `json:"formatVersion"`
-		InputSHA256   string      `json:"inputSha256"`
-		Attribution   Attribution `json:"attribution"`
-		Report        struct {
+		FormatVersion        int                   `json:"formatVersion"`
+		InputSHA256          string                `json:"inputSha256"`
+		Attribution          Attribution           `json:"attribution"`
+		IdentityVerification *IdentityVerification `json:"identityVerification"`
+		Report               struct {
 			OperationVersionID string `json:"operationVersionId"`
 			Phase              string `json:"phase"`
 		} `json:"report"`
@@ -249,12 +264,30 @@ func stableObserveFingerprint(body []byte) (string, error) {
 	if _, err := hex.DecodeString(value.InputSHA256); err != nil {
 		return "", errors.New("Observe digest is invalid")
 	}
+	if value.IdentityVerification != nil {
+		if len(value.IdentityVerification.KeySHA256) != 64 ||
+			len(value.IdentityVerification.SignatureSHA256) != 64 {
+			return "", errors.New("Observe identity verification is invalid")
+		}
+		if _, err := hex.DecodeString(value.IdentityVerification.KeySHA256); err != nil {
+			return "", errors.New("Observe identity verification is invalid")
+		}
+		if _, err := hex.DecodeString(value.IdentityVerification.SignatureSHA256); err != nil {
+			return "", errors.New("Observe identity verification is invalid")
+		}
+	}
+	identityKeySHA256 := ""
+	if value.IdentityVerification != nil {
+		identityKeySHA256 = value.IdentityVerification.KeySHA256
+	}
 	canonical, err := json.Marshal(struct {
 		InputSHA256        string      `json:"inputSha256"`
 		Attribution        Attribution `json:"attribution"`
 		OperationVersionID string      `json:"operationVersionId"`
 		Phase              string      `json:"phase"`
-	}{value.InputSHA256, value.Attribution, value.Report.OperationVersionID, value.Report.Phase})
+		IdentityKeySHA256  string      `json:"identityKeySha256"`
+	}{value.InputSHA256, value.Attribution, value.Report.OperationVersionID, value.Report.Phase,
+		identityKeySHA256})
 	if err != nil {
 		return "", err
 	}

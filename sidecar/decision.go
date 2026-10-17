@@ -17,6 +17,7 @@ type EvaluationRequest struct {
 	Arguments          json.RawMessage `json:"arguments"`
 	Result             json.RawMessage `json:"result,omitempty"`
 	Attribution        Attribution     `json:"attribution"`
+	IdentityProof      IdentityProof   `json:"identityProof"`
 }
 
 type Attribution struct {

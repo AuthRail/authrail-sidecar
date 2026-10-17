@@ -25,8 +25,9 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 			t.Errorf("report audience or identity is wrong")
 		}
 		var body struct {
-			InputSHA256 string `json:"inputSha256"`
-			Report      struct {
+			InputSHA256          string               `json:"inputSha256"`
+			IdentityVerification IdentityVerification `json:"identityVerification"`
+			Report               struct {
 				Evaluation Evaluation `json:"evaluation"`
 			} `json:"report"`
 		}
@@ -46,6 +47,8 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 		}
 		expected := sha256.Sum256(input)
 		if body.InputSHA256 != hex.EncodeToString(expected[:]) ||
+			len(body.IdentityVerification.KeySHA256) != 64 ||
+			len(body.IdentityVerification.SignatureSHA256) != 64 ||
 			body.Report.Evaluation.Outcome != "allow" || body.Report.Evaluation.Enforced {
 			t.Errorf("incorrect advisory report: %+v", body)
 		}
@@ -56,7 +59,7 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 	syncer.options.ControlPlaneURL = server.URL
 	syncer.options.Token = "deployment-secret"
 	syncer.options.Client = server.Client()
-	requestBody, _ := json.Marshal(call(50))
+	requestBody, _ := json.Marshal(signedCall(t, syncer, call(50), "invoice-123"))
 	request := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(requestBody))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
 	request.Header.Set("Idempotency-Key", "invoice-123")
@@ -81,7 +84,7 @@ func TestObserveRecordingFailureKeepsLocalDecision(t *testing.T) {
 			"id": "ordinary", "when": decisionCondition("lte", 100),
 			"outcome": "allow", "reason": "Ordinary amount"}})
 	syncer := decisionSynchronizer(t, []map[string]any{policy})
-	requestBody, _ := json.Marshal(call(50))
+	requestBody, _ := json.Marshal(signedCall(t, syncer, call(50), "invoice-123"))
 	request := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(requestBody))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
 	request.Header.Set("Idempotency-Key", "invoice-123")
@@ -112,7 +115,7 @@ func TestObserveReportSurvivesRestartAndRetriesWithoutToolPayload(t *testing.T) 
 	syncer.options.ControlPlaneURL = unavailable.URL
 	syncer.options.Token = "deployment-secret"
 	syncer.options.Client = unavailable.Client()
-	requestBody, _ := json.Marshal(call(50))
+	requestBody, _ := json.Marshal(signedCall(t, syncer, call(50), "invoice-123"))
 	request := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(requestBody))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
 	request.Header.Set("Idempotency-Key", "invoice-123")

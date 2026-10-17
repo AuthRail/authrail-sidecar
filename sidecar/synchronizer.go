@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,14 +18,15 @@ import (
 )
 
 type Options struct {
-	ControlPlaneURL string
-	Token           string
-	OrganisationID  string
-	DeploymentID    string
-	TrustedPins     map[string]struct{}
-	StateFile       string
-	Client          *http.Client
-	Now             func() time.Time
+	ControlPlaneURL   string
+	Token             string
+	OrganisationID    string
+	DeploymentID      string
+	TrustedPins       map[string]struct{}
+	ExecutorPublicKey ed25519.PublicKey
+	StateFile         string
+	Client            *http.Client
+	Now               func() time.Time
 }
 
 type Snapshot struct {
@@ -60,6 +62,10 @@ type Synchronizer struct {
 }
 
 func NewSynchronizer(options Options) (*Synchronizer, error) {
+	if len(options.ExecutorPublicKey) != 0 && len(options.ExecutorPublicKey) != ed25519.PublicKeySize {
+		return nil, errors.New("executor public key is invalid")
+	}
+	options.ExecutorPublicKey = append(ed25519.PublicKey(nil), options.ExecutorPublicKey...)
 	if !uuidPattern.MatchString(options.OrganisationID) ||
 		!uuidPattern.MatchString(options.DeploymentID) || options.Token == "" ||
 		len(options.TrustedPins) == 0 || options.StateFile == "" {

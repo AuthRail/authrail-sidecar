@@ -21,6 +21,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	adapterToken := os.Getenv("AUTHRAIL_ADAPTER_TOKEN")
+	var executorPublicKey []byte
+	if adapterToken != "" {
+		if len(adapterToken) < 32 {
+			log.Fatal("AUTHRAIL_ADAPTER_TOKEN must have at least 32 characters")
+		}
+		executorPublicKey, err = sidecar.LoadExecutorPublicKey(os.Getenv("AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE"))
+		if err != nil {
+			log.Fatal("AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE must contain an Ed25519 public key")
+		}
+	}
 	interval := 5 * time.Second
 	if value := os.Getenv("AUTHRAIL_SYNC_INTERVAL"); value != "" {
 		interval, err = time.ParseDuration(value)
@@ -29,12 +40,13 @@ func main() {
 		}
 	}
 	synchronizer, err := sidecar.NewSynchronizer(sidecar.Options{
-		ControlPlaneURL: os.Getenv("AUTHRAIL_CONTROL_PLANE_URL"),
-		Token:           os.Getenv("AUTHRAIL_DEPLOYMENT_TOKEN"),
-		OrganisationID:  os.Getenv("AUTHRAIL_ORGANISATION_ID"),
-		DeploymentID:    os.Getenv("AUTHRAIL_DEPLOYMENT_ID"),
-		TrustedPins:     pins,
-		StateFile:       os.Getenv("AUTHRAIL_STATE_FILE"),
+		ControlPlaneURL:   os.Getenv("AUTHRAIL_CONTROL_PLANE_URL"),
+		Token:             os.Getenv("AUTHRAIL_DEPLOYMENT_TOKEN"),
+		OrganisationID:    os.Getenv("AUTHRAIL_ORGANISATION_ID"),
+		DeploymentID:      os.Getenv("AUTHRAIL_DEPLOYMENT_ID"),
+		TrustedPins:       pins,
+		ExecutorPublicKey: executorPublicKey,
+		StateFile:         os.Getenv("AUTHRAIL_STATE_FILE"),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -57,11 +69,7 @@ func main() {
 		writer.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(writer).Encode(synchronizer.Snapshot())
 	})
-	if adapterToken := os.Getenv("AUTHRAIL_ADAPTER_TOKEN"); adapterToken != "" {
-		if len(adapterToken) < 32 {
-			listener.Close()
-			log.Fatal("AUTHRAIL_ADAPTER_TOKEN must have at least 32 characters")
-		}
+	if adapterToken != "" {
 		mux.Handle("POST /evaluate", sidecar.EvaluationHandler(synchronizer, adapterToken))
 	}
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}

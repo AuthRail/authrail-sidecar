@@ -54,6 +54,10 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if err := syncer.verifyIdentityProof(request, r.Header.Get("Idempotency-Key")); err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		evaluation, err := syncer.Evaluate(request)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
