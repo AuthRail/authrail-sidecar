@@ -16,20 +16,30 @@ type EvaluationRequest struct {
 	Phase              string          `json:"phase"`
 	Arguments          json.RawMessage `json:"arguments"`
 	Result             json.RawMessage `json:"result,omitempty"`
+	Attribution        Attribution     `json:"attribution"`
+}
+
+type Attribution struct {
+	PrincipalID string  `json:"principalId"`
+	SessionID   string  `json:"sessionId"`
+	ResourceID  *string `json:"resourceId"`
 }
 
 type Evaluation struct {
-	RequestID      string            `json:"requestId"`
-	Mode           string            `json:"mode"`
-	Enforced       bool              `json:"enforced"`
-	Coverage       string            `json:"coverage"`
-	Outcome        string            `json:"outcome"`
-	Sequence       int64             `json:"sequence"`
-	BundleID       *string           `json:"bundleId"`
-	RailVersionIDs []string          `json:"railVersionIds"`
-	MatchedRuleIDs []string          `json:"matchedRuleIds"`
-	ReasonCodes    []string          `json:"reasonCodes"`
-	Unresolved     []UnresolvedField `json:"unresolved"`
+	RequestID       string            `json:"requestId"`
+	Mode            string            `json:"mode"`
+	Enforced        bool              `json:"enforced"`
+	Coverage        string            `json:"coverage"`
+	Outcome         string            `json:"outcome"`
+	Sequence        int64             `json:"sequence"`
+	BundleID        *string           `json:"bundleId"`
+	RailVersionIDs  []string          `json:"railVersionIds"`
+	MatchedRuleIDs  []string          `json:"matchedRuleIds"`
+	ReasonCodes     []string          `json:"reasonCodes"`
+	Unresolved      []UnresolvedField `json:"unresolved"`
+	RecordingStatus string            `json:"recordingStatus,omitempty"`
+	ActionID        string            `json:"actionId,omitempty"`
+	CertificateID   string            `json:"certificateId,omitempty"`
 }
 
 type UnresolvedField struct {

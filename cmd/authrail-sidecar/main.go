@@ -77,6 +77,20 @@ func main() {
 	if err := synchronizer.Sync(ctx); err != nil && ctx.Err() == nil {
 		log.Print("initial configuration sync: ", safeError(err))
 	}
+	go func() {
+		retryTicker := time.NewTicker(15 * time.Second)
+		defer retryTicker.Stop()
+		for {
+			if err := synchronizer.RetryObservations(ctx); err != nil && ctx.Err() == nil {
+				log.Print("Observe reports remain queued")
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-retryTicker.C:
+			}
+		}
+	}()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

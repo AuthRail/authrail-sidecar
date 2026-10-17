@@ -10,6 +10,7 @@ import (
 )
 
 var actionKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+var identityRefPattern = actionKeyPattern
 
 // EvaluationHandler accepts only requests from the protected local adapter.
 // The deployment credential is never accepted on this listener.
@@ -46,10 +47,25 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if !identityRefPattern.MatchString(request.Attribution.PrincipalID) ||
+			!identityRefPattern.MatchString(request.Attribution.SessionID) ||
+			(request.Attribution.ResourceID != nil &&
+				!identityRefPattern.MatchString(*request.Attribution.ResourceID)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		evaluation, err := syncer.Evaluate(request)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
+		}
+		if retained, status := syncer.retainObserve(r.Context(),
+			r.Header.Get("Idempotency-Key"), request, evaluation); status == "retained" {
+			evaluation.RecordingStatus = status
+			evaluation.ActionID = retained.ActionID
+			evaluation.CertificateID = retained.CertificateID
+		} else {
+			evaluation.RecordingStatus = status
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(evaluation)

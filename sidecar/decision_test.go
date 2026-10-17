@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -80,9 +81,13 @@ func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
 	config.Bundle.VerificationKey.Format = "spki-der"
 	config.Bundle.VerificationKey.Base64 = base64.StdEncoding.EncodeToString(der)
 	config.Bundle.VerificationKey.SHA256 = hex.EncodeToString(fingerprint[:])
+	stateDir := t.TempDir()
+	if err := os.Chmod(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	return &Synchronizer{options: Options{OrganisationID: organisationID,
 		DeploymentID: deploymentID, TrustedPins: map[string]struct{}{config.Bundle.VerificationKey.SHA256: {}},
-		StateFile: filepath.Join(t.TempDir(), "state.json"), Now: func() time.Time { return now }},
+		StateFile: filepath.Join(stateDir, "state.json"), Now: func() time.Time { return now }},
 		state: diskState{FormatVersion: 1, OrganisationID: organisationID,
 			DeploymentID: deploymentID, Floor: 1, Current: &config}}
 }
@@ -90,7 +95,8 @@ func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
 func call(amount int) EvaluationRequest {
 	args, _ := json.Marshal(map[string]any{"amount": amount})
 	return EvaluationRequest{FormatVersion: 1, RequestID: decisionRequestID,
-		OperationVersionID: decisionOperationID, Phase: "tool_call", Arguments: args}
+		OperationVersionID: decisionOperationID, Phase: "tool_call", Arguments: args,
+		Attribution: Attribution{PrincipalID: "staff_123", SessionID: "task_123"}}
 }
 
 func TestObserveCompositionKeepsGuardAndPolicyDistinct(t *testing.T) {

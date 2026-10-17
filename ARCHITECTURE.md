@@ -30,10 +30,13 @@ deployment credential.
 ## Decision boundary
 
 A local adapter can send a tool call or result to `/evaluate` with the exact
-Operation Version, a request ID, and the action fields. A separate adapter
+Operation Version, a request ID, opaque principal and session references, an
+optional resource reference, and the action fields. These references are
+attributed to the adapter; they do not establish verified principal identity.
+A separate adapter
 secret protects this loopback endpoint. A caller-supplied action key travels
-in the `Idempotency-Key` header; durable deduplication is not implemented yet.
-The deployment credential is used only for configuration sync.
+in the `Idempotency-Key` header. The deployment credential authenticates both
+configuration sync and the sidecar's report to AuthRail.
 
 The sidecar checks the current signed bundle and evaluates its Guard and Policy
 rules for that Operation. A Guard can deny or clear its boundary; only a Policy
@@ -43,6 +46,13 @@ Every response says `mode: observe` and `enforced: false`; the adapter must not
 treat it as permission or a block. The protected executor owns provider
 credentials and performs the operation.
 
-This endpoint does not yet send an Action or Decision Certificate to AuthRail.
-No adapter is shipped in this repository yet. `/health` still reports
-configuration coverage; it does not claim that calls are intercepted.
+For a covered call or result, the sidecar sends the evaluated outcome, exact
+bundle and rule references, and a digest of canonicalized input to AuthRail.
+Raw action fields and tool results stay local. The AuthRail server retains an
+idempotent Action and signs a certificate explicitly marked as a
+deployment-reported Observe result. Before upload, the sidecar saves the bounded
+metadata-only report in a private queue beside its state file. It retries queued
+reports after restart and periodically while running. A failed upload leaves
+the local response marked `recordingStatus: queued`; a failed queue write is
+`unavailable`. Neither is presented as centrally retained. The first Go SDK is a separate repository. `/health` still
+reports configuration coverage; it does not claim that calls are intercepted.

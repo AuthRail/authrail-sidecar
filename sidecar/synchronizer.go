@@ -36,6 +36,7 @@ type Snapshot struct {
 	SyncStatus     string     `json:"syncStatus"`
 	LastSyncAt     *time.Time `json:"lastSyncAt,omitempty"`
 	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	PendingReports int        `json:"pendingReports"`
 }
 
 type diskState struct {
@@ -47,12 +48,15 @@ type diskState struct {
 }
 
 type Synchronizer struct {
-	mu       sync.RWMutex
-	options  Options
-	endpoint string
-	state    diskState
-	status   string
-	lastSync *time.Time
+	mu                 sync.RWMutex
+	options            Options
+	endpoint           string
+	state              diskState
+	status             string
+	lastSync           *time.Time
+	observeMu          sync.Mutex
+	observeQueue       observeQueueState
+	observeQueueLoaded bool
 }
 
 func NewSynchronizer(options Options) (*Synchronizer, error) {
@@ -86,6 +90,12 @@ func NewSynchronizer(options Options) (*Synchronizer, error) {
 	s := &Synchronizer{options: options,
 		endpoint: base.String() + "/runtime/deployment/configuration", state: state,
 		status: "not_synchronized"}
+	s.observeMu.Lock()
+	err = s.ensureObserveQueueLocked()
+	s.observeMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	if state.Current != nil {
 		if _, err := verifyConfiguration(*state.Current,
 			options.OrganisationID, options.DeploymentID, options.TrustedPins, options.Now()); err != nil {
@@ -198,6 +208,9 @@ func (s *Synchronizer) Snapshot() Snapshot {
 	result := Snapshot{Sequence: s.state.Floor, Mode: "observe",
 		Coverage: "configuration_only", SyncStatus: s.status,
 		LastSyncAt: s.lastSync}
+	s.observeMu.Lock()
+	result.PendingReports = len(s.observeQueue.Entries)
+	s.observeMu.Unlock()
 	if s.state.Current == nil || s.state.Current.Bundle == nil {
 		return result
 	}
