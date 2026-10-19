@@ -30,6 +30,7 @@ and deployment IDs, trusted signing-key fingerprint, and a durable state path:
 | `AUTHRAIL_STATE_FILE` | File path for local state |
 | `AUTHRAIL_ADAPTER_TOKEN` | Separate secret shared with your local adapter to enable Observe checks |
 | `AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE` | PEM Ed25519 public key for assertions signed by your protected application |
+| `AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` | Optional previous public key while changing the application key |
 
 Keep the credential away from the agent and its tools. Keep the state file and
 its adjacent `.observations` retry file on private storage that survives
@@ -61,13 +62,16 @@ expired, or changed assertions before checking Rails. Derive those references
 from your application's authenticated session and resource lookup. A signature
 shows which application key asserted them; it does not authenticate the person
 on its own.
-The local `/health` response shows `executorKeySha256`; compare it with the
-fingerprint on the deployment page to confirm the sidecar loaded the same
-public key. This is configuration evidence, not proof of interception.
-Registration accepts one key per deployment in this slice. Drain pending
-Observe reports before registration; older reports without a signed assertion
-cannot be verified against the newly registered key. Key replacement needs a
-separate rotation flow and is not available on this setup page yet.
+The local `/health` response shows `executorKeySha256s`; compare them with the
+fingerprints on the deployment page. This is configuration evidence, not proof
+of interception. To change keys, add the new public key on that page, switch
+the application to its new private key, and set the new public key as
+`AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE`. Keep the old public key as
+`AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` while old reports drain. The old
+key is accepted for at most 24 hours. Check `pendingReports: 0` and
+`blockedReports: 0` on every sidecar before retiring it. If a key is
+compromised, revoke it immediately on the deployment page; queued reports
+signed by that key become recording gaps that require review.
 
 **Current build:** the local endpoint evaluates calls and results against the
 active signed Rails in Observe mode. It reports what the Rails would decide,
@@ -77,6 +81,8 @@ never sends the input or result itself. Your adapter supplies opaque principal,
 session, and optional resource references. The local response says whether the
 report was retained, queued for retry, or unavailable. A retained response has
 the Action and certificate IDs. `/health` shows the number of pending reports.
+Reports rejected after a key closes remain in the private queue with a blocked
+reason and appear in `blockedReports`; they are not silently deleted or certified.
 The queue holds at most 512 reports or 16 MiB, rejects new reports when full,
 and never drops old ones automatically. Recording failure does not stop the action. No published binary or container
 image is included yet.

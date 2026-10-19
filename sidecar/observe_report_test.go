@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,39 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestClosedKeyReportBecomesVisibleLocalGap(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	entry := queuedObserve{ActionKey: "closed-key", Phase: "tool_call",
+		Body: json.RawMessage(`{"formatVersion":1,"inputSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attribution":{"principalId":"staff_123","sessionId":"task_123","resourceId":null},"report":{"operationVersionId":"00000000-0000-4000-8000-000000000008","phase":"tool_call","evaluation":{"requestId":"old"}}}`)}
+	if _, err := syncer.enqueueObserve(entry); err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"EXECUTOR_KEY_CLOSED","message":"The application key no longer accepts reports."}`))
+	}))
+	defer server.Close()
+	syncer.options.ControlPlaneURL = server.URL
+	syncer.options.Token = "deployment-secret"
+	syncer.options.Client = server.Client()
+	if err := syncer.RetryObservations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if syncer.Snapshot().PendingReports != 0 || syncer.Snapshot().BlockedReports != 1 {
+		t.Fatal("closed-key report was not kept as a visible gap")
+	}
+	restarted := &Synchronizer{options: syncer.options, state: syncer.state}
+	if err := restarted.RetryObservations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || restarted.Snapshot().BlockedReports != 1 {
+		t.Fatal("closed-key report was retried or lost after restart")
+	}
+}
 
 func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 	policy := decisionRail("00000000-0000-4000-8000-000000000012",

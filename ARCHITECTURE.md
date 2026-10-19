@@ -66,3 +66,10 @@ reports after restart and periodically while running. A failed upload leaves
 the local response marked `recordingStatus: queued`; a failed queue write is
 `unavailable`. Neither is presented as centrally retained. The first Go SDK is a separate repository. `/health` still
 reports configuration coverage; it does not claim that calls are intercepted.
+During application key rotation, the sidecar verifies assertions with the new
+key and optional previous key, then reports the matching key fingerprint for
+server verification. The server accepts the previous key only during its bounded
+overlap. Once closed, a new report under it receives a specific permanent
+response. The queue retains that metadata-only report with a blocked reason,
+excludes it from retries, and exposes the count in `/health`. Each instance
+owns its queue; the server does not infer that all instances have drained.

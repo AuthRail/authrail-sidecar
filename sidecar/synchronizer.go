@@ -20,28 +20,31 @@ import (
 )
 
 type Options struct {
-	ControlPlaneURL   string
-	Token             string
-	OrganisationID    string
-	DeploymentID      string
-	TrustedPins       map[string]struct{}
-	ExecutorPublicKey ed25519.PublicKey
-	StateFile         string
-	Client            *http.Client
-	Now               func() time.Time
+	ControlPlaneURL    string
+	Token              string
+	OrganisationID     string
+	DeploymentID       string
+	TrustedPins        map[string]struct{}
+	ExecutorPublicKey  ed25519.PublicKey
+	ExecutorPublicKeys []ed25519.PublicKey
+	StateFile          string
+	Client             *http.Client
+	Now                func() time.Time
 }
 
 type Snapshot struct {
-	Sequence          int64      `json:"sequence"`
-	ActiveBundleID    *string    `json:"activeBundleId"`
-	Mode              string     `json:"mode"`
-	BundleValid       bool       `json:"bundleValid"`
-	Coverage          string     `json:"coverage"`
-	SyncStatus        string     `json:"syncStatus"`
-	LastSyncAt        *time.Time `json:"lastSyncAt,omitempty"`
-	ExpiresAt         *time.Time `json:"expiresAt,omitempty"`
-	PendingReports    int        `json:"pendingReports"`
-	ExecutorKeySHA256 string     `json:"executorKeySha256,omitempty"`
+	Sequence           int64      `json:"sequence"`
+	ActiveBundleID     *string    `json:"activeBundleId"`
+	Mode               string     `json:"mode"`
+	BundleValid        bool       `json:"bundleValid"`
+	Coverage           string     `json:"coverage"`
+	SyncStatus         string     `json:"syncStatus"`
+	LastSyncAt         *time.Time `json:"lastSyncAt,omitempty"`
+	ExpiresAt          *time.Time `json:"expiresAt,omitempty"`
+	PendingReports     int        `json:"pendingReports"`
+	ExecutorKeySHA256  string     `json:"executorKeySha256,omitempty"`
+	ExecutorKeySHA256s []string   `json:"executorKeySha256s,omitempty"`
+	BlockedReports     int        `json:"blockedReports"`
 }
 
 type diskState struct {
@@ -69,6 +72,22 @@ func NewSynchronizer(options Options) (*Synchronizer, error) {
 		return nil, errors.New("executor public key is invalid")
 	}
 	options.ExecutorPublicKey = append(ed25519.PublicKey(nil), options.ExecutorPublicKey...)
+	if len(options.ExecutorPublicKeys) > 2 {
+		return nil, errors.New("at most two executor public keys are supported during rotation")
+	}
+	for i, key := range options.ExecutorPublicKeys {
+		if len(key) != ed25519.PublicKeySize {
+			return nil, errors.New("executor public key is invalid")
+		}
+		options.ExecutorPublicKeys[i] = append(ed25519.PublicKey(nil), key...)
+	}
+	if len(options.ExecutorPublicKeys) == 2 &&
+		string(options.ExecutorPublicKeys[0]) == string(options.ExecutorPublicKeys[1]) {
+		return nil, errors.New("executor public keys must be different")
+	}
+	if len(options.ExecutorPublicKeys) == 0 && len(options.ExecutorPublicKey) != 0 {
+		options.ExecutorPublicKeys = []ed25519.PublicKey{options.ExecutorPublicKey}
+	}
 	if !uuidPattern.MatchString(options.OrganisationID) ||
 		!uuidPattern.MatchString(options.DeploymentID) || options.Token == "" ||
 		len(options.TrustedPins) == 0 || options.StateFile == "" {
@@ -217,12 +236,21 @@ func (s *Synchronizer) Snapshot() Snapshot {
 	result := Snapshot{Sequence: s.state.Floor, Mode: "observe",
 		Coverage: "configuration_only", SyncStatus: s.status,
 		LastSyncAt: s.lastSync}
-	if len(s.options.ExecutorPublicKey) == ed25519.PublicKeySize {
-		digest := sha256.Sum256(s.options.ExecutorPublicKey)
-		result.ExecutorKeySHA256 = hex.EncodeToString(digest[:])
+	for _, key := range s.options.ExecutorPublicKeys {
+		digest := sha256.Sum256(key)
+		result.ExecutorKeySHA256s = append(result.ExecutorKeySHA256s, hex.EncodeToString(digest[:]))
+	}
+	if len(result.ExecutorKeySHA256s) > 0 {
+		result.ExecutorKeySHA256 = result.ExecutorKeySHA256s[0]
 	}
 	s.observeMu.Lock()
-	result.PendingReports = len(s.observeQueue.Entries)
+	for _, entry := range s.observeQueue.Entries {
+		if entry.BlockedReason == "" {
+			result.PendingReports++
+		} else {
+			result.BlockedReports++
+		}
+	}
 	s.observeMu.Unlock()
 	if s.state.Current == nil || s.state.Current.Bundle == nil {
 		return result

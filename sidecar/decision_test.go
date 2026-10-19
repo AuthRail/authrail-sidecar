@@ -89,13 +89,20 @@ func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
 	}
 	return &Synchronizer{options: Options{OrganisationID: organisationID,
 		DeploymentID: deploymentID, TrustedPins: map[string]struct{}{config.Bundle.VerificationKey.SHA256: {}},
-		ExecutorPublicKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey),
-		StateFile:         filepath.Join(stateDir, "state.json"), Now: func() time.Time { return now }},
+		ExecutorPublicKey:  ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey),
+		ExecutorPublicKeys: []ed25519.PublicKey{ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey)},
+		StateFile:          filepath.Join(stateDir, "state.json"), Now: func() time.Time { return now }},
 		state: diskState{FormatVersion: 1, OrganisationID: organisationID,
 			DeploymentID: deploymentID, Floor: 1, Current: &config}}
 }
 
 func signedCall(t *testing.T, syncer *Synchronizer, request EvaluationRequest, actionKey string) EvaluationRequest {
+	return signedCallWithKey(t, syncer, request, actionKey,
+		ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)))
+}
+
+func signedCallWithKey(t *testing.T, syncer *Synchronizer, request EvaluationRequest,
+	actionKey string, privateKey ed25519.PrivateKey) EvaluationRequest {
 	t.Helper()
 	input, err := observeInputBytes(request)
 	if err != nil {
@@ -114,9 +121,31 @@ func signedCall(t *testing.T, syncer *Synchronizer, request EvaluationRequest, a
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.IdentityProof.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(
-		ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), message))
+	request.IdentityProof.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, message))
 	return request
+}
+
+func TestExecutorKeyOverlapReportsMatchingFingerprint(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	newSeed := make([]byte, ed25519.SeedSize)
+	newSeed[0] = 1
+	newPrivate := ed25519.NewKeyFromSeed(newSeed)
+	newPublic := newPrivate.Public().(ed25519.PublicKey)
+	oldPublic := syncer.options.ExecutorPublicKey
+	syncer.options.ExecutorPublicKeys = []ed25519.PublicKey{newPublic, oldPublic}
+	for _, candidate := range []struct {
+		private ed25519.PrivateKey
+		public  ed25519.PublicKey
+	}{{newPrivate, newPublic}, {ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), oldPublic}} {
+		request := signedCallWithKey(t, syncer, call(50), "invoice-123", candidate.private)
+		if err := syncer.verifyIdentityProof(request, "invoice-123"); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(candidate.public)
+		if syncer.identityVerification(request, "invoice-123").KeySHA256 != hex.EncodeToString(digest[:]) {
+			t.Fatal("sidecar reported the wrong key during overlap")
+		}
+	}
 }
 
 func call(amount int) EvaluationRequest {

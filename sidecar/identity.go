@@ -25,8 +25,9 @@ type IdentityVerification struct {
 	SignatureSHA256 string `json:"signatureSha256"`
 }
 
-func (s *Synchronizer) identityVerification(request EvaluationRequest) IdentityVerification {
-	keyDigest := sha256.Sum256(s.options.ExecutorPublicKey)
+func (s *Synchronizer) identityVerification(request EvaluationRequest, actionKey string) IdentityVerification {
+	key, _ := s.matchExecutorKey(request, actionKey)
+	keyDigest := sha256.Sum256(key)
 	signature, _ := base64.RawURLEncoding.DecodeString(request.IdentityProof.Signature)
 	signatureDigest := sha256.Sum256(signature)
 	return IdentityVerification{KeySHA256: hex.EncodeToString(keyDigest[:]),
@@ -68,28 +69,33 @@ func LoadExecutorPublicKey(path string) (ed25519.PublicKey, error) {
 }
 
 func (s *Synchronizer) verifyIdentityProof(request EvaluationRequest, actionKey string) error {
+	_, err := s.matchExecutorKey(request, actionKey)
+	return err
+}
+
+func (s *Synchronizer) matchExecutorKey(request EvaluationRequest, actionKey string) (ed25519.PublicKey, error) {
 	proof := request.IdentityProof
 	now := s.options.Now
 	if now == nil {
 		now = time.Now
 	}
 	issued, expires, current := time.Unix(proof.IssuedAt, 0), time.Unix(proof.ExpiresAt, 0), now()
-	if len(s.options.ExecutorPublicKey) != ed25519.PublicKeySize ||
+	if len(s.options.ExecutorPublicKeys) == 0 ||
 		proof.IssuedAt <= 0 || proof.ExpiresAt <= proof.IssuedAt ||
 		expires.Sub(issued) > 60*time.Second ||
 		issued.After(current.Add(5*time.Second)) || !expires.After(current) ||
 		!uuidPattern.MatchString(request.RequestID) ||
 		!uuidPattern.MatchString(request.OperationVersionID) ||
 		(request.Phase != "tool_call" && request.Phase != "tool_result") {
-		return errors.New("executor identity proof is invalid")
+		return nil, errors.New("executor identity proof is invalid")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(proof.Signature)
 	if err != nil || len(signature) != ed25519.SignatureSize {
-		return errors.New("executor identity proof is invalid")
+		return nil, errors.New("executor identity proof is invalid")
 	}
 	input, err := observeInputBytes(request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	digest := sha256.Sum256(input)
 	statement := identityStatement{Type: "authrail.observe.executor.v1",
@@ -99,8 +105,13 @@ func (s *Synchronizer) verifyIdentityProof(request EvaluationRequest, actionKey 
 		InputSHA256: hex.EncodeToString(digest[:]), Attribution: request.Attribution,
 		IssuedAt: proof.IssuedAt, ExpiresAt: proof.ExpiresAt}
 	message, err := json.Marshal(statement)
-	if err != nil || !ed25519.Verify(s.options.ExecutorPublicKey, message, signature) {
-		return errors.New("executor identity proof is invalid")
+	if err != nil {
+		return nil, errors.New("executor identity proof is invalid")
 	}
-	return nil
+	for _, key := range s.options.ExecutorPublicKeys {
+		if ed25519.Verify(key, message, signature) {
+			return key, nil
+		}
+	}
+	return nil, errors.New("executor identity proof is invalid")
 }

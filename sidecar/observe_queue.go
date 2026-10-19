@@ -17,9 +17,10 @@ const maxObserveReports = 512
 const maxObserveQueueBytes = 16 * 1024 * 1024
 
 type queuedObserve struct {
-	ActionKey string          `json:"actionKey"`
-	Phase     string          `json:"phase"`
-	Body      json.RawMessage `json:"body"`
+	ActionKey     string          `json:"actionKey"`
+	Phase         string          `json:"phase"`
+	Body          json.RawMessage `json:"body"`
+	BlockedReason string          `json:"blockedReason,omitempty"`
 }
 
 type observeQueueState struct {
@@ -63,7 +64,8 @@ func (s *Synchronizer) ensureObserveQueueLocked() error {
 		key := entry.ActionKey + "\x00" + entry.Phase
 		if !actionKeyPattern.MatchString(entry.ActionKey) ||
 			(entry.Phase != "tool_call" && entry.Phase != "tool_result") ||
-			validateQueuedObserveBody(entry.Body) != nil {
+			validateQueuedObserveBody(entry.Body) != nil ||
+			(entry.BlockedReason != "" && entry.BlockedReason != "application_key_closed") {
 			return errors.New("Observe report queue contains invalid entries")
 		}
 		if _, duplicate := seen[key]; duplicate {
@@ -73,6 +75,28 @@ func (s *Synchronizer) ensureObserveQueueLocked() error {
 	}
 	s.observeQueue = state
 	s.observeQueueLoaded = true
+	return nil
+}
+
+func (s *Synchronizer) blockObserve(entry queuedObserve) error {
+	s.observeMu.Lock()
+	defer s.observeMu.Unlock()
+	if err := s.ensureObserveQueueLocked(); err != nil {
+		return err
+	}
+	for index, existing := range s.observeQueue.Entries {
+		if existing.ActionKey == entry.ActionKey && existing.Phase == entry.Phase &&
+			bytes.Equal(existing.Body, entry.Body) {
+			next := s.observeQueue
+			next.Entries = append([]queuedObserve{}, s.observeQueue.Entries...)
+			next.Entries[index].BlockedReason = "application_key_closed"
+			if err := s.saveObserveQueueLocked(next); err != nil {
+				return err
+			}
+			s.observeQueue = next
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -196,10 +220,18 @@ func (s *Synchronizer) RetryObservations(ctx context.Context) error {
 	}
 	var failed bool
 	for _, entry := range entries {
+		if entry.BlockedReason != "" {
+			continue
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if _, err := s.sendObserve(ctx, entry); err != nil {
+			if errors.Is(err, errExecutorKeyClosed) {
+				if blockErr := s.blockObserve(entry); blockErr == nil {
+					continue
+				}
+			}
 			failed = true
 			continue
 		}

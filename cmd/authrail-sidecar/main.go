@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"log"
@@ -23,6 +24,7 @@ func main() {
 	}
 	adapterToken := os.Getenv("AUTHRAIL_ADAPTER_TOKEN")
 	var executorPublicKey []byte
+	var executorPublicKeys []ed25519.PublicKey
 	if adapterToken != "" {
 		if len(adapterToken) < 32 {
 			log.Fatal("AUTHRAIL_ADAPTER_TOKEN must have at least 32 characters")
@@ -30,6 +32,14 @@ func main() {
 		executorPublicKey, err = sidecar.LoadExecutorPublicKey(os.Getenv("AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE"))
 		if err != nil {
 			log.Fatal("AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE must contain an Ed25519 public key")
+		}
+		executorPublicKeys = append(executorPublicKeys, executorPublicKey)
+		if previous := os.Getenv("AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE"); previous != "" {
+			key, loadErr := sidecar.LoadExecutorPublicKey(previous)
+			if loadErr != nil {
+				log.Fatal("AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE must contain an Ed25519 public key")
+			}
+			executorPublicKeys = append(executorPublicKeys, key)
 		}
 	}
 	interval := 5 * time.Second
@@ -40,13 +50,14 @@ func main() {
 		}
 	}
 	synchronizer, err := sidecar.NewSynchronizer(sidecar.Options{
-		ControlPlaneURL:   os.Getenv("AUTHRAIL_CONTROL_PLANE_URL"),
-		Token:             os.Getenv("AUTHRAIL_DEPLOYMENT_TOKEN"),
-		OrganisationID:    os.Getenv("AUTHRAIL_ORGANISATION_ID"),
-		DeploymentID:      os.Getenv("AUTHRAIL_DEPLOYMENT_ID"),
-		TrustedPins:       pins,
-		ExecutorPublicKey: executorPublicKey,
-		StateFile:         os.Getenv("AUTHRAIL_STATE_FILE"),
+		ControlPlaneURL:    os.Getenv("AUTHRAIL_CONTROL_PLANE_URL"),
+		Token:              os.Getenv("AUTHRAIL_DEPLOYMENT_TOKEN"),
+		OrganisationID:     os.Getenv("AUTHRAIL_ORGANISATION_ID"),
+		DeploymentID:       os.Getenv("AUTHRAIL_DEPLOYMENT_ID"),
+		TrustedPins:        pins,
+		ExecutorPublicKey:  executorPublicKey,
+		ExecutorPublicKeys: executorPublicKeys,
+		StateFile:          os.Getenv("AUTHRAIL_STATE_FILE"),
 	})
 	if err != nil {
 		log.Fatal(err)
