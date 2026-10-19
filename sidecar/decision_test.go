@@ -241,6 +241,133 @@ func TestObserveMissingFactsAndCoverage(t *testing.T) {
 	}
 }
 
+func TestObserveUsesOnlyExactFreshSignedDataFacts(t *testing.T) {
+	sourceVersionID := "00000000-0000-4000-8000-000000000030"
+	dataVersionID := "00000000-0000-4000-8000-000000000031"
+	data := decisionRail("00000000-0000-4000-8000-000000000032", dataVersionID, "data", nil)
+	data["sourceContextVersionId"] = sourceVersionID
+	data["sourceContextContract"] = map[string]any{
+		"formatVersion": 1, "provider": "stripe", "lookup": "invoice.retrieve",
+		"providerAccountId": "acct_12345678", "queryField": map[string]any{
+			"root": "arguments", "path": []string{"invoiceId"}},
+		"factKey": "invoiceStatus", "resultField": "status",
+		"maxAgeSeconds": 60, "timeoutMs": 1000, "failure": "unavailable"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000033",
+		"00000000-0000-4000-8000-000000000034", "policy", []map[string]any{{
+			"id": "paidInvoice", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"invoiceStatus"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": "paid"}},
+			"outcome": "allow", "reason": "Invoice is paid"}})
+	policy["content"].(map[string]any)["factBindings"] = []map[string]any{{
+		"factKey": "invoiceStatus", "dataRailVersionId": dataVersionID}}
+	syncer := decisionSynchronizer(t, []map[string]any{data, policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"invoiceId":"in_1234"}`)
+	request.FactResolutions = []FactResolution{{SourceVersionID: sourceVersionID,
+		ProviderAccountID: "acct_12345678", Lookup: "invoice.retrieve", LookupKey: "in_1234",
+		AuthenticatedExecutor: true, Status: "ok", ObservedAt: syncer.options.Now().Add(-10 * time.Second).Format(time.RFC3339Nano),
+		Value: map[string]any{"status": "paid"}}}
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" || len(allowed.Facts) != 1 ||
+		allowed.Facts[0].Status != "trusted" || allowed.Facts[0].LookupKeySHA256 == "" ||
+		allowed.Facts[0].AgeSeconds != 10 {
+		t.Fatalf("fresh exact fact was not used: %+v %v", allowed, err)
+	}
+	for name, change := range map[string]func(*EvaluationRequest){
+		"wrong account": func(value *EvaluationRequest) { value.FactResolutions[0].ProviderAccountID = "acct_87654321" },
+		"wrong key":     func(value *EvaluationRequest) { value.FactResolutions[0].LookupKey = "in_other" },
+		"stale": func(value *EvaluationRequest) {
+			value.FactResolutions[0].ObservedAt = syncer.options.Now().Add(-time.Hour).Format(time.RFC3339Nano)
+		},
+		"unavailable": func(value *EvaluationRequest) { value.FactResolutions[0].Status = "unavailable" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := request
+			changed.FactResolutions = append([]FactResolution(nil), request.FactResolutions...)
+			change(&changed)
+			response, err := syncer.Evaluate(changed)
+			if err != nil || response.Outcome != "additional_context_required" ||
+				len(response.Facts) != 1 || response.Facts[0].Status == "trusted" ||
+				len(response.Unresolved) != 1 {
+				t.Fatalf("uncertain fact allowed: %+v %v", response, err)
+			}
+		})
+	}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	signed.FactResolutions[0].ProviderAccountID = "acct_87654321"
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("changed fact passed application signature")
+	}
+}
+
+func TestCustomerFactKeepsReviewedSourceAndAccount(t *testing.T) {
+	dataVersionID := "00000000-0000-4000-8000-000000000041"
+	data := decisionRail("00000000-0000-4000-8000-000000000042", dataVersionID, "data", nil)
+	data["sourceContextVersionId"] = "00000000-0000-4000-8000-000000000040"
+	data["sourceContextContract"] = map[string]any{
+		"formatVersion": 4, "kind": "customer_api", "sourceIdentity": "billing.production",
+		"accountBoundary": "tenant_123", "lookup": "invoice.read",
+		"queryField": map[string]any{"root": "arguments", "path": []string{"invoiceId"}},
+		"factKey":    "invoicePaid", "resultPath": []string{"invoice", "paid"},
+		"valueType": "boolean", "maxAgeSeconds": 60, "timeoutMs": 1000, "failure": "unavailable"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000043",
+		"00000000-0000-4000-8000-000000000044", "policy", []map[string]any{{
+			"id": "paidInvoice", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"invoicePaid"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": true}},
+			"outcome": "allow", "reason": "Invoice is paid"}})
+	policy["content"].(map[string]any)["factBindings"] = []map[string]any{{
+		"factKey": "invoicePaid", "dataRailVersionId": dataVersionID}}
+	syncer := decisionSynchronizer(t, []map[string]any{data, policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"invoiceId":"invoice_123"}`)
+	request.FactResolutions = []FactResolution{{SourceVersionID: "00000000-0000-4000-8000-000000000040",
+		SourceIdentity: "billing.production", AccountBoundary: "tenant_123", Lookup: "invoice.read",
+		LookupKey: "invoice_123", AuthenticatedExecutor: true, Status: "ok",
+		ObservedAt: syncer.options.Now().Add(-time.Second).Format(time.RFC3339Nano),
+		Value:      map[string]any{"invoice": map[string]any{"paid": true}}}}
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" || allowed.Facts[0].Status != "trusted" {
+		t.Fatalf("customer fact was not used: %+v %v", allowed, err)
+	}
+	request.FactResolutions[0].AccountBoundary = "tenant_456"
+	untrusted, err := syncer.Evaluate(request)
+	if err != nil || untrusted.Outcome != "additional_context_required" ||
+		untrusted.Facts[0].Status != "untrusted" {
+		t.Fatalf("cross-account customer fact was used: %+v %v", untrusted, err)
+	}
+}
+
+func TestNumericFactSignatureSurvivesHTTPJSON(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	request := call(50)
+	request.FactResolutions = []FactResolution{{SourceVersionID: "00000000-0000-4000-8000-000000000040",
+		Lookup: "invoice.read", LookupKey: "invoice_123", AuthenticatedExecutor: true,
+		Status: "ok", ObservedAt: syncer.options.Now().Format(time.RFC3339Nano),
+		Value: map[string]any{"balance": int64(9007199254740993)}}}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	body, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var received EvaluationRequest
+	if err := decoder.Decode(&received); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.verifyIdentityProof(received, "invoice-123"); err != nil {
+		t.Fatalf("numeric fact lost its signed wire representation: %v", err)
+	}
+	received.FactResolutions[0].Value["balance"] = json.Number("9007199254740994")
+	if syncer.verifyIdentityProof(received, "invoice-123") == nil {
+		t.Fatal("changed numeric fact passed the signature")
+	}
+}
+
 func TestLocalEvaluationEndpointRequiresAdapterToken(t *testing.T) {
 	guard := decisionRail("00000000-0000-4000-8000-000000000010",
 		"00000000-0000-4000-8000-000000000011", "guard", []map[string]any{{

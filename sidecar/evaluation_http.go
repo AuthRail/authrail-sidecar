@@ -36,6 +36,7 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
+		decoder.UseNumber()
 		decoder.DisallowUnknownFields()
 		var request EvaluationRequest
 		if err := decoder.Decode(&request); err != nil {

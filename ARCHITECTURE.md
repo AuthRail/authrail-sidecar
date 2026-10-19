@@ -49,8 +49,14 @@ secret protects this loopback endpoint. A caller-supplied action key travels
 in the `Idempotency-Key` header. The deployment credential authenticates both
 configuration sync and the sidecar's report to AuthRail.
 
-The sidecar checks the current signed bundle and evaluates its Guard and Policy
-rules for that Operation. A Guard can deny or clear its boundary; only a Policy
+The sidecar checks the current signed bundle and evaluates its Data, Guard, and
+Policy rules for that Operation. A protected application resolves a bounded
+read-only fact using its own credentials and signs the resolution with the
+action input. Each Data Rail projects only the value named by its exact
+reviewed source version after checking the account, lookup, record key,
+value type, and freshness. Missing, stale, unavailable, duplicate, or
+mismatched resolutions remain unresolved for Policy rules. A Data Rail never
+authorizes the action. A Guard can deny or clear its boundary; only a Policy
 can allow the business action. Missing trusted facts, identity, or trajectory
 state remain unresolved. An unselected Operation is reported as uncovered.
 Every response says `mode: observe` and `enforced: false`; the adapter must not
@@ -58,9 +64,10 @@ treat it as permission or a block. The protected executor owns provider
 credentials and performs the operation.
 
 For a covered call or result, the sidecar sends the evaluated outcome, exact
-bundle and rule references, a digest of canonicalized input, and the signed
+bundle and rule references, fact status and bounded provenance, a digest of
+canonicalized input, and the signed
 executor assertion to AuthRail. The assertion contains references and digests,
-not the tool input or result. AuthRail verifies it against the public key
+not the tool input, result, fact value, or raw lookup key. AuthRail verifies it against the public key
 registered for that deployment before recording a verified signature claim.
 Raw action fields and tool results stay local. The AuthRail server retains an
 idempotent Action and signs a certificate explicitly marked as a

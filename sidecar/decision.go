@@ -10,14 +10,15 @@ import (
 
 // Evaluation is advisory in Observe. It never authorizes execution.
 type EvaluationRequest struct {
-	FormatVersion      int             `json:"formatVersion"`
-	RequestID          string          `json:"requestId"`
-	OperationVersionID string          `json:"operationVersionId"`
-	Phase              string          `json:"phase"`
-	Arguments          json.RawMessage `json:"arguments"`
-	Result             json.RawMessage `json:"result,omitempty"`
-	Attribution        Attribution     `json:"attribution"`
-	IdentityProof      IdentityProof   `json:"identityProof"`
+	FormatVersion      int              `json:"formatVersion"`
+	RequestID          string           `json:"requestId"`
+	OperationVersionID string           `json:"operationVersionId"`
+	Phase              string           `json:"phase"`
+	Arguments          json.RawMessage  `json:"arguments"`
+	Result             json.RawMessage  `json:"result,omitempty"`
+	FactResolutions    []FactResolution `json:"factResolutions,omitempty"`
+	Attribution        Attribution      `json:"attribution"`
+	IdentityProof      IdentityProof    `json:"identityProof"`
 }
 
 type Attribution struct {
@@ -40,6 +41,7 @@ type Evaluation struct {
 	MatchedRuleIDs  []string          `json:"matchedRuleIds"`
 	ReasonCodes     []string          `json:"reasonCodes"`
 	Unresolved      []UnresolvedField `json:"unresolved"`
+	Facts           []FactSummary     `json:"facts,omitempty"`
 	RecordingStatus string            `json:"recordingStatus,omitempty"`
 	ActionID        string            `json:"actionId,omitempty"`
 	CertificateID   string            `json:"certificateId,omitempty"`
@@ -52,11 +54,13 @@ type UnresolvedField struct {
 }
 
 type railBinding struct {
-	RailID             string `json:"railId"`
-	VersionID          string `json:"versionId"`
-	OperationVersionID string `json:"operationVersionId"`
-	Kind               string `json:"kind"`
-	OperationContract  struct {
+	RailID                 string       `json:"railId"`
+	VersionID              string       `json:"versionId"`
+	OperationVersionID     string       `json:"operationVersionId"`
+	Kind                   string       `json:"kind"`
+	SourceContextVersionID string       `json:"sourceContextVersionId"`
+	SourceContextContract  factContract `json:"sourceContextContract"`
+	OperationContract      struct {
 		RequiredCoverage []string `json:"requiredCoverage"`
 		ResourceIdentity *struct {
 			Type  string   `json:"type"`
@@ -64,7 +68,11 @@ type railBinding struct {
 		} `json:"resourceIdentity"`
 	} `json:"operationContract"`
 	Content struct {
-		Rules []json.RawMessage `json:"rules"`
+		Rules        []json.RawMessage `json:"rules"`
+		FactBindings []struct {
+			FactKey           string `json:"factKey"`
+			DataRailVersionID string `json:"dataRailVersionId"`
+		} `json:"factBindings"`
 	} `json:"content"`
 }
 
@@ -105,8 +113,15 @@ type ruleResult struct {
 func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 	if request.FormatVersion != 1 || !uuidPattern.MatchString(request.RequestID) ||
 		!uuidPattern.MatchString(request.OperationVersionID) ||
-		(request.Phase != "tool_call" && request.Phase != "tool_result") {
+		(request.Phase != "tool_call" && request.Phase != "tool_result") ||
+		len(request.FactResolutions) > 100 {
 		return Evaluation{}, errors.New("evaluation request is invalid")
+	}
+	for _, resolution := range request.FactResolutions {
+		value, err := json.Marshal(resolution.Value)
+		if err != nil || len(value) > 16*1024 || len(resolution.LookupKey) > 256 {
+			return Evaluation{}, errors.New("fact resolution is invalid")
+		}
 	}
 	arguments, err := object(request.Arguments)
 	if err != nil {
@@ -144,6 +159,7 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 	identityMissing := request.Attribution.PrincipalSource != "application_session" &&
 		request.Attribution.PrincipalSource != "service_identity"
 	var policyFound, denied, contextMissing, approval, policyAllowed bool
+	selected := make([]railBinding, 0, len(manifest.Rails))
 	for _, raw := range manifest.Rails {
 		var rail railBinding
 		if err := json.Unmarshal(raw, &rail); err != nil || !uuidPattern.MatchString(rail.VersionID) ||
@@ -158,6 +174,7 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 		}
 		response.Coverage = "evaluated"
 		response.RailVersionIDs = append(response.RailVersionIDs, rail.VersionID)
+		selected = append(selected, rail)
 		if rail.OperationContract.ResourceIdentity == nil {
 			if request.Attribution.ResourceID != nil || request.Attribution.ResourceSource != "not_applicable" {
 				identityMissing = true
@@ -171,6 +188,17 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 				identityMissing = true
 			}
 		}
+	}
+	resolved := make(map[string]resolvedFact)
+	for _, rail := range selected {
+		if rail.Kind != "data" {
+			continue
+		}
+		fact := resolveDataFact(rail, arguments, request.FactResolutions, s.options.Now())
+		resolved[rail.VersionID] = fact
+		response.Facts = append(response.Facts, fact.summary)
+	}
+	for _, rail := range selected {
 		if rail.Kind == "data" {
 			continue
 		}
@@ -180,7 +208,16 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 		if rail.Kind == "policy" {
 			policyFound = true
 		}
-		evaluated, err := evaluateRules(rail, request.Phase, arguments, result, request.Attribution)
+		facts := make(map[string]resolvedFact)
+		if rail.Kind == "policy" {
+			for _, binding := range rail.Content.FactBindings {
+				fact, exists := resolved[binding.DataRailVersionID]
+				if exists && fact.summary.FactKey == binding.FactKey {
+					facts[binding.FactKey] = fact
+				}
+			}
+		}
+		evaluated, err := evaluateRules(rail, request.Phase, arguments, result, request.Attribution, facts)
 		if err != nil {
 			return invalidBundle(response), nil
 		}
@@ -239,10 +276,12 @@ func invalidBundle(value Evaluation) Evaluation {
 	value.MatchedRuleIDs = []string{}
 	value.ReasonCodes = []string{"bundle_unavailable"}
 	value.Unresolved = []UnresolvedField{}
+	value.Facts = nil
 	return value
 }
 
-func evaluateRules(rail railBinding, phase string, args, result map[string]any, attribution Attribution) (ruleResult, error) {
+func evaluateRules(rail railBinding, phase string, args, result map[string]any,
+	attribution Attribution, facts map[string]resolvedFact) (ruleResult, error) {
 	if len(rail.Content.Rules) == 0 {
 		return ruleResult{}, errors.New("rules are missing")
 	}
@@ -262,7 +301,7 @@ func evaluateRules(rail railBinding, phase string, args, result map[string]any, 
 				Path: []string{"priorReadOperationVersionIds"}, Reason: "missing"})
 			continue
 		}
-		matched, unresolved, err := evaluateCondition(rule.When, args, result, attribution, 0)
+		matched, unresolved, err := evaluateCondition(rule.When, args, result, attribution, facts, 0)
 		if err != nil {
 			return output, err
 		}
@@ -302,7 +341,8 @@ func evaluateRules(rail railBinding, phase string, args, result map[string]any, 
 	return output, nil
 }
 
-func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribution Attribution, depth int) (bool, []UnresolvedField, error) {
+func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribution Attribution,
+	facts map[string]resolvedFact, depth int) (bool, []UnresolvedField, error) {
 	if depth > 8 {
 		return false, nil, errors.New("condition is too deep")
 	}
@@ -318,7 +358,7 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribu
 		anyTrue, anyFalse := false, false
 		var unresolved []UnresolvedField
 		for _, child := range node.Conditions {
-			matched, missing, err := evaluateCondition(child, args, result, attribution, depth+1)
+			matched, missing, err := evaluateCondition(child, args, result, attribution, facts, depth+1)
 			if err != nil {
 				return false, nil, err
 			}
@@ -347,17 +387,17 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribu
 		}
 		return false, nil, nil
 	case "not":
-		matched, unresolved, err := evaluateCondition(node.Condition, args, result, attribution, depth+1)
+		matched, unresolved, err := evaluateCondition(node.Condition, args, result, attribution, facts, depth+1)
 		if err != nil || len(unresolved) > 0 {
 			return false, unresolved, err
 		}
 		return !matched, nil, nil
 	case "compare":
-		left, leftMissing := resolveIdentity(node.Left, args, result, attribution)
+		left, leftMissing := resolveIdentity(node.Left, args, result, attribution, facts)
 		var right any
 		var rightMissing []UnresolvedField
 		if node.Right.Kind == "field" {
-			right, rightMissing = resolveIdentity(node.Right.Field, args, result, attribution)
+			right, rightMissing = resolveIdentity(node.Right.Field, args, result, attribution, facts)
 		} else if node.Right.Kind == "literal" {
 			if err := json.Unmarshal(node.Right.Value, &right); err != nil {
 				return false, nil, err
@@ -459,7 +499,19 @@ func resolve(f field, args, result map[string]any) (any, []UnresolvedField) {
 	return value, nil
 }
 
-func resolveIdentity(f field, args, result map[string]any, attribution Attribution) (any, []UnresolvedField) {
+func resolveIdentity(f field, args, result map[string]any, attribution Attribution,
+	facts map[string]resolvedFact) (any, []UnresolvedField) {
+	if f.Root == "facts" && len(f.Path) == 1 {
+		fact, found := facts[f.Path[0]]
+		if found && fact.status == "trusted" {
+			return fact.value, nil
+		}
+		reason := "unavailable"
+		if found {
+			reason = fact.status
+		}
+		return nil, []UnresolvedField{{Root: "facts", Path: f.Path, Reason: reason}}
+	}
 	if len(f.Path) == 1 && f.Path[0] == "id" {
 		switch f.Root {
 		case "principal":

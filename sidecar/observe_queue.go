@@ -14,7 +14,8 @@ import (
 )
 
 const maxObserveReports = 512
-const maxObserveQueueBytes = 16 * 1024 * 1024
+const maxObserveReportBytes = 64 * 1024
+const maxObserveQueueBytes = 40 * 1024 * 1024
 
 type queuedObserve struct {
 	ActionKey     string          `json:"actionKey"`
@@ -119,7 +120,7 @@ func (s *Synchronizer) enqueueObserve(entry queuedObserve) (queuedObserve, error
 			return queuedObserve{}, errors.New("Observe action key and phase already have different queued input")
 		}
 	}
-	if len(s.observeQueue.Entries) >= maxObserveReports || len(entry.Body) > 32_000 {
+	if len(s.observeQueue.Entries) >= maxObserveReports || len(entry.Body) > maxObserveReportBytes {
 		return queuedObserve{}, errors.New("Observe report queue is full")
 	}
 	next := s.observeQueue
@@ -251,7 +252,7 @@ func (s *Synchronizer) RetryObservations(ctx context.Context) error {
 // Ensure the queue never contains raw tool payload keys, even if a caller
 // accidentally passes a different JSON body in the future.
 func validateQueuedObserveBody(body []byte) error {
-	if len(body) > 32_000 || !json.Valid(body) {
+	if len(body) > maxObserveReportBytes || !json.Valid(body) {
 		return errors.New("Observe report is invalid")
 	}
 	var value map[string]json.RawMessage
