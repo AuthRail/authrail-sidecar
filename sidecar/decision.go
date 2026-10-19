@@ -10,15 +10,16 @@ import (
 
 // Evaluation is advisory in Observe. It never authorizes execution.
 type EvaluationRequest struct {
-	FormatVersion      int              `json:"formatVersion"`
-	RequestID          string           `json:"requestId"`
-	OperationVersionID string           `json:"operationVersionId"`
-	Phase              string           `json:"phase"`
-	Arguments          json.RawMessage  `json:"arguments"`
-	Result             json.RawMessage  `json:"result,omitempty"`
-	FactResolutions    []FactResolution `json:"factResolutions,omitempty"`
-	Attribution        Attribution      `json:"attribution"`
-	IdentityProof      IdentityProof    `json:"identityProof"`
+	FormatVersion      int                 `json:"formatVersion"`
+	RequestID          string              `json:"requestId"`
+	OperationVersionID string              `json:"operationVersionId"`
+	Phase              string              `json:"phase"`
+	Arguments          json.RawMessage     `json:"arguments"`
+	Result             json.RawMessage     `json:"result,omitempty"`
+	FactResolutions    []FactResolution    `json:"factResolutions,omitempty"`
+	Trajectory         *TrajectorySnapshot `json:"trajectory,omitempty"`
+	Attribution        Attribution         `json:"attribution"`
+	IdentityProof      IdentityProof       `json:"identityProof"`
 }
 
 type Attribution struct {
@@ -61,7 +62,11 @@ type railBinding struct {
 	SourceContextVersionID string       `json:"sourceContextVersionId"`
 	SourceContextContract  factContract `json:"sourceContextContract"`
 	OperationContract      struct {
-		RequiredCoverage []string `json:"requiredCoverage"`
+		RequiredCoverage []string         `json:"requiredCoverage"`
+		AvailableFields  []availableField `json:"availableFields"`
+		ExpectedEffects  []struct {
+			Kind string `json:"kind"`
+		} `json:"expectedEffects"`
 		ResourceIdentity *struct {
 			Type  string   `json:"type"`
 			Field []string `json:"field"`
@@ -76,12 +81,19 @@ type railBinding struct {
 	} `json:"content"`
 }
 
+type availableField struct {
+	Root string   `json:"root"`
+	Path []string `json:"path"`
+	Type string   `json:"type"`
+}
+
 type decisionRule struct {
-	ID      string          `json:"id"`
-	Kind    string          `json:"kind"`
-	Phase   string          `json:"phase"`
-	When    json.RawMessage `json:"when"`
-	Outcome string          `json:"outcome"`
+	ID                       string          `json:"id"`
+	Kind                     string          `json:"kind"`
+	Phase                    string          `json:"phase"`
+	When                     json.RawMessage `json:"when"`
+	Outcome                  string          `json:"outcome"`
+	SourceOperationVersionID string          `json:"sourceOperationVersionId"`
 }
 
 type condition struct {
@@ -123,6 +135,9 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 			return Evaluation{}, errors.New("fact resolution is invalid")
 		}
 	}
+	if !validTrajectory(request.Trajectory, request.Attribution.SessionID) {
+		return Evaluation{}, errors.New("trajectory snapshot is invalid")
+	}
 	arguments, err := object(request.Arguments)
 	if err != nil {
 		return Evaluation{}, errors.New("arguments must be a JSON object")
@@ -160,11 +175,19 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 		request.Attribution.PrincipalSource != "service_identity"
 	var policyFound, denied, contextMissing, approval, policyAllowed bool
 	selected := make([]railBinding, 0, len(manifest.Rails))
+	coveredReads := make(map[string]bool)
 	for _, raw := range manifest.Rails {
 		var rail railBinding
 		if err := json.Unmarshal(raw, &rail); err != nil || !uuidPattern.MatchString(rail.VersionID) ||
 			!uuidPattern.MatchString(rail.OperationVersionID) {
 			return invalidBundle(response), nil
+		}
+		if contains(rail.OperationContract.RequiredCoverage, "tool_result") {
+			for _, effect := range rail.OperationContract.ExpectedEffects {
+				if effect.Kind == "read" {
+					coveredReads[rail.OperationVersionID] = true
+				}
+			}
 		}
 		if !strings.EqualFold(rail.OperationVersionID, request.OperationVersionID) {
 			continue
@@ -191,6 +214,9 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 	}
 	resolved := make(map[string]resolvedFact)
 	for _, rail := range selected {
+		if request.Trajectory != nil && !reviewedTrajectoryValues(request.Trajectory.Values, rail.OperationContract.AvailableFields) {
+			return Evaluation{}, errors.New("trajectory fields are outside the reviewed Operation")
+		}
 		if rail.Kind != "data" {
 			continue
 		}
@@ -217,7 +243,7 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 				}
 			}
 		}
-		evaluated, err := evaluateRules(rail, request.Phase, arguments, result, request.Attribution, facts)
+		evaluated, err := evaluateRules(rail, request.Phase, arguments, result, request.Attribution, facts, request.Trajectory, coveredReads)
 		if err != nil {
 			return invalidBundle(response), nil
 		}
@@ -281,7 +307,8 @@ func invalidBundle(value Evaluation) Evaluation {
 }
 
 func evaluateRules(rail railBinding, phase string, args, result map[string]any,
-	attribution Attribution, facts map[string]resolvedFact) (ruleResult, error) {
+	attribution Attribution, facts map[string]resolvedFact, trajectory *TrajectorySnapshot,
+	coveredReads map[string]bool) (ruleResult, error) {
 	if len(rail.Content.Rules) == 0 {
 		return ruleResult{}, errors.New("rules are missing")
 	}
@@ -296,12 +323,25 @@ func evaluateRules(rail railBinding, phase string, args, result map[string]any,
 			continue
 		}
 		if rail.Kind == "guard" && rule.Kind == "prior_read" {
-			missing = true
-			output.unresolved = append(output.unresolved, UnresolvedField{Root: "trajectory",
-				Path: []string{"priorReadOperationVersionIds"}, Reason: "missing"})
+			if rule.Outcome != "deny" || !uuidPattern.MatchString(rule.SourceOperationVersionID) ||
+				rule.SourceOperationVersionID != strings.ToLower(rule.SourceOperationVersionID) {
+				return output, errors.New("prior read rule is invalid")
+			}
+			if !coveredReads[rule.SourceOperationVersionID] {
+				missing = true
+				output.unresolved = append(output.unresolved, UnresolvedField{Root: "trajectory",
+					Path: []string{"priorReadOperationVersionIds"}, Reason: "unavailable"})
+			} else if trajectory == nil || !trajectory.Complete {
+				missing = true
+				output.unresolved = append(output.unresolved, UnresolvedField{Root: "trajectory",
+					Path: []string{"priorReadOperationVersionIds"}, Reason: "missing"})
+			} else if contains(trajectory.PriorReadOperationVersionIDs, rule.SourceOperationVersionID) {
+				denied = true
+				output.matched = append(output.matched, rule.ID)
+			}
 			continue
 		}
-		matched, unresolved, err := evaluateCondition(rule.When, args, result, attribution, facts, 0)
+		matched, unresolved, err := evaluateCondition(rule.When, args, result, attribution, facts, trajectory, 0)
 		if err != nil {
 			return output, err
 		}
@@ -342,7 +382,7 @@ func evaluateRules(rail railBinding, phase string, args, result map[string]any,
 }
 
 func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribution Attribution,
-	facts map[string]resolvedFact, depth int) (bool, []UnresolvedField, error) {
+	facts map[string]resolvedFact, trajectory *TrajectorySnapshot, depth int) (bool, []UnresolvedField, error) {
 	if depth > 8 {
 		return false, nil, errors.New("condition is too deep")
 	}
@@ -358,7 +398,7 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribu
 		anyTrue, anyFalse := false, false
 		var unresolved []UnresolvedField
 		for _, child := range node.Conditions {
-			matched, missing, err := evaluateCondition(child, args, result, attribution, facts, depth+1)
+			matched, missing, err := evaluateCondition(child, args, result, attribution, facts, trajectory, depth+1)
 			if err != nil {
 				return false, nil, err
 			}
@@ -387,17 +427,17 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribu
 		}
 		return false, nil, nil
 	case "not":
-		matched, unresolved, err := evaluateCondition(node.Condition, args, result, attribution, facts, depth+1)
+		matched, unresolved, err := evaluateCondition(node.Condition, args, result, attribution, facts, trajectory, depth+1)
 		if err != nil || len(unresolved) > 0 {
 			return false, unresolved, err
 		}
 		return !matched, nil, nil
 	case "compare":
-		left, leftMissing := resolveIdentity(node.Left, args, result, attribution, facts)
+		left, leftMissing := resolveIdentity(node.Left, args, result, attribution, facts, trajectory)
 		var right any
 		var rightMissing []UnresolvedField
 		if node.Right.Kind == "field" {
-			right, rightMissing = resolveIdentity(node.Right.Field, args, result, attribution, facts)
+			right, rightMissing = resolveIdentity(node.Right.Field, args, result, attribution, facts, trajectory)
 		} else if node.Right.Kind == "literal" {
 			if err := json.Unmarshal(node.Right.Value, &right); err != nil {
 				return false, nil, err
@@ -500,7 +540,30 @@ func resolve(f field, args, result map[string]any) (any, []UnresolvedField) {
 }
 
 func resolveIdentity(f field, args, result map[string]any, attribution Attribution,
-	facts map[string]resolvedFact) (any, []UnresolvedField) {
+	facts map[string]resolvedFact, trajectory *TrajectorySnapshot) (any, []UnresolvedField) {
+	if f.Root == "trajectory" && len(f.Path) == 1 && f.Path[0] == "priorReadOperationVersionIds" {
+		if trajectory == nil || !trajectory.Complete {
+			return nil, []UnresolvedField{{Root: f.Root, Path: f.Path, Reason: "missing"}}
+		}
+		return trajectory.PriorReadOperationVersionIDs, nil
+	}
+	if f.Root == "trajectory" {
+		if trajectory == nil || !trajectory.Complete {
+			return nil, []UnresolvedField{{Root: f.Root, Path: f.Path, Reason: "missing"}}
+		}
+		value, unresolved := resolve(field{Root: "arguments", Path: f.Path}, trajectory.Values, nil)
+		if len(unresolved) != 0 {
+			return nil, []UnresolvedField{{Root: f.Root, Path: f.Path, Reason: unresolved[0].Reason}}
+		}
+		if number, ok := value.(json.Number); ok {
+			parsed, err := number.Float64()
+			if err != nil {
+				return nil, []UnresolvedField{{Root: f.Root, Path: f.Path, Reason: "invalid_type"}}
+			}
+			return parsed, nil
+		}
+		return value, nil
+	}
 	if f.Root == "facts" && len(f.Path) == 1 {
 		fact, found := facts[f.Path[0]]
 		if found && fact.status == "trusted" {

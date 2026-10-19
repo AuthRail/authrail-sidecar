@@ -59,6 +59,18 @@ mismatched resolutions remain unresolved for Policy rules. A Data Rail never
 authorizes the action. A Guard can deny or clear its boundary; only a Policy
 can allow the business action. Missing trusted facts, identity, or trajectory
 state remain unresolved. An unselected Operation is reported as uncovered.
+For an authored prior-read Guard, a protected application may sign a bounded
+snapshot of successful earlier read Operation Versions for the same authenticated
+session. The sidecar rejects cross-session, duplicate, malformed, or oversized
+snapshots. Missing or incomplete history cannot clear the Guard; an exact prior
+read denies even when a Policy would otherwise allow. If the source read lacks
+result-hook coverage in the active bundle, the Guard remains unresolved even
+with a snapshot. This is a key-authenticated
+application assertion, not an independently reconstructed trajectory or proof
+of a prior effect. Small typed trajectory values are usable only when listed
+in the exact reviewed Operation contract; unknown fields or types are rejected.
+AI output is not made trusted merely by putting it in this snapshot. The local input digest binds it to the call or result while
+the central report retains only the digest and decision metadata.
 Every response says `mode: observe` and `enforced: false`; the adapter must not
 treat it as permission or a block. The protected executor owns provider
 credentials and performs the operation.

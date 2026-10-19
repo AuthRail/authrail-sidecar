@@ -123,9 +123,10 @@ func observeInputBytes(request EvaluationRequest) ([]byte, error) {
 	}
 	if request.Phase == "tool_call" {
 		return json.Marshal(struct {
-			Arguments       map[string]any   `json:"arguments"`
-			FactResolutions []FactResolution `json:"factResolutions,omitempty"`
-		}{arguments, request.FactResolutions})
+			Arguments       map[string]any      `json:"arguments"`
+			FactResolutions []FactResolution    `json:"factResolutions,omitempty"`
+			Trajectory      *TrajectorySnapshot `json:"trajectory,omitempty"`
+		}{arguments, request.FactResolutions, request.Trajectory})
 	}
 	if request.Phase == "tool_result" {
 		result, err := object(request.Result)
@@ -133,10 +134,11 @@ func observeInputBytes(request EvaluationRequest) ([]byte, error) {
 			return nil, err
 		}
 		return json.Marshal(struct {
-			Arguments       map[string]any   `json:"arguments"`
-			Result          map[string]any   `json:"result"`
-			FactResolutions []FactResolution `json:"factResolutions,omitempty"`
-		}{arguments, result, request.FactResolutions})
+			Arguments       map[string]any      `json:"arguments"`
+			Result          map[string]any      `json:"result"`
+			FactResolutions []FactResolution    `json:"factResolutions,omitempty"`
+			Trajectory      *TrajectorySnapshot `json:"trajectory,omitempty"`
+		}{arguments, result, request.FactResolutions, request.Trajectory})
 	}
 	return nil, errors.New("Observe phase is invalid")
 }

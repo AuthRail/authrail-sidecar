@@ -368,6 +368,120 @@ func TestNumericFactSignatureSurvivesHTTPJSON(t *testing.T) {
 	}
 }
 
+func TestPriorReadRequiresExactSignedSessionHistory(t *testing.T) {
+	readVersionID := "00000000-0000-4000-8000-000000000070"
+	guard := decisionRail("00000000-0000-4000-8000-000000000071",
+		"00000000-0000-4000-8000-000000000072", "guard", []map[string]any{{
+			"id": "privateRead", "kind": "prior_read", "phase": "tool_call",
+			"sourceOperationVersionId": readVersionID, "outcome": "deny"}})
+	guard["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "trajectory"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000073",
+		"00000000-0000-4000-8000-000000000074", "policy", []map[string]any{{
+			"id": "ordinaryAllow", "when": decisionCondition("gt", 0), "outcome": "allow"}})
+	readRail := decisionRail("00000000-0000-4000-8000-000000000075",
+		"00000000-0000-4000-8000-000000000076", "guard", []map[string]any{{
+			"id": "readBoundary", "phase": "tool_result", "when": decisionCondition("gt", 0), "outcome": "allow"}})
+	readRail["operationVersionId"] = readVersionID
+	readRail["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "tool_result"}
+	readRail["operationContract"].(map[string]any)["expectedEffects"] = []map[string]any{{"kind": "read"}}
+	syncer := decisionSynchronizer(t, []map[string]any{guard, policy, readRail})
+	request := call(50)
+	missing, err := syncer.Evaluate(request)
+	if err != nil || missing.Outcome != "additional_context_required" ||
+		len(missing.Unresolved) != 1 || missing.Unresolved[0].Root != "trajectory" {
+		t.Fatalf("missing history allowed the operation: %+v %v", missing, err)
+	}
+	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
+		Complete: true, PriorReadOperationVersionIDs: []string{readVersionID}}
+	denied, err := syncer.Evaluate(request)
+	if err != nil || denied.Outcome != "deny" || len(denied.MatchedRuleIDs) != 2 {
+		t.Fatalf("exact prior read did not dominate allow: %+v %v", denied, err)
+	}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	signed.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
+		Complete: true, PriorReadOperationVersionIDs: []string{}}
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("changed session history passed the signature")
+	}
+	request.Trajectory = signed.Trajectory
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" {
+		t.Fatalf("complete empty history did not clear the guard: %+v %v", allowed, err)
+	}
+	request.Trajectory.SessionID = "different_session"
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("cross-session history was accepted")
+	}
+	request.Trajectory.SessionID = request.Attribution.SessionID
+	request.Trajectory.Complete = false
+	incomplete, err := syncer.Evaluate(request)
+	if err != nil || incomplete.Outcome != "additional_context_required" {
+		t.Fatalf("incomplete history cleared the guard: %+v %v", incomplete, err)
+	}
+	request.Trajectory.Complete = true
+	request.Trajectory.PriorReadOperationVersionIDs = []string{readVersionID, readVersionID}
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("duplicate prior read versions were accepted")
+	}
+	request.Trajectory.PriorReadOperationVersionIDs = []string{"not-a-version"}
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("malformed prior read version was accepted")
+	}
+	withoutReadCoverage := decisionSynchronizer(t, []map[string]any{guard, policy})
+	request.Trajectory.PriorReadOperationVersionIDs = []string{readVersionID}
+	uncovered, err := withoutReadCoverage.Evaluate(request)
+	if err != nil || uncovered.Outcome != "additional_context_required" ||
+		len(uncovered.Unresolved) != 1 || uncovered.Unresolved[0].Reason != "unavailable" {
+		t.Fatalf("uncovered source read cleared the guard: %+v %v", uncovered, err)
+	}
+}
+
+func TestReviewedTrajectoryFieldParticipatesInGuardDecision(t *testing.T) {
+	guard := decisionRail("00000000-0000-4000-8000-000000000081",
+		"00000000-0000-4000-8000-000000000082", "guard", []map[string]any{{
+			"id": "sensitiveHistory", "phase": "tool_call", "when": map[string]any{
+				"kind": "compare", "left": map[string]any{"root": "trajectory", "path": []string{"sensitiveDataSeen"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": true}},
+			"outcome": "deny"}})
+	policy := decisionRail("00000000-0000-4000-8000-000000000083",
+		"00000000-0000-4000-8000-000000000084", "policy", []map[string]any{{
+			"id": "ordinaryAllow", "when": decisionCondition("gt", 0), "outcome": "allow"}})
+	for _, rail := range []map[string]any{guard, policy} {
+		rail["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "trajectory"}
+		rail["operationContract"].(map[string]any)["availableFields"] = []map[string]any{{
+			"root": "trajectory", "path": []string{"sensitiveDataSeen"}, "type": "boolean"}}
+	}
+	syncer := decisionSynchronizer(t, []map[string]any{guard, policy})
+	request := call(50)
+	missing, err := syncer.Evaluate(request)
+	if err != nil || missing.Outcome != "additional_context_required" {
+		t.Fatalf("missing trajectory field allowed: %+v %v", missing, err)
+	}
+	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
+		Complete: true, Values: map[string]any{"sensitiveDataSeen": true}}
+	denied, err := syncer.Evaluate(request)
+	if err != nil || denied.Outcome != "deny" {
+		t.Fatalf("reviewed sensitive history did not deny: %+v %v", denied, err)
+	}
+	request.Trajectory.Values["sensitiveDataSeen"] = false
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" {
+		t.Fatalf("reviewed clear history did not allow: %+v %v", allowed, err)
+	}
+	request.Trajectory.Values["extra"] = true
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("unreviewed trajectory field was accepted")
+	}
+	delete(request.Trajectory.Values, "extra")
+	request.Trajectory.Values["sensitiveDataSeen"] = "false"
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("wrong trajectory field type was accepted")
+	}
+}
+
 func TestLocalEvaluationEndpointRequiresAdapterToken(t *testing.T) {
 	guard := decisionRail("00000000-0000-4000-8000-000000000010",
 		"00000000-0000-4000-8000-000000000011", "guard", []map[string]any{{
