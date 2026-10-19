@@ -23,6 +23,11 @@ func main() {
 		log.Fatal(err)
 	}
 	adapterToken := os.Getenv("AUTHRAIL_ADAPTER_TOKEN")
+	operatorToken := os.Getenv("AUTHRAIL_OPERATOR_TOKEN")
+	if operatorToken != "" && (len(operatorToken) < 32 ||
+		operatorToken == adapterToken || operatorToken == os.Getenv("AUTHRAIL_DEPLOYMENT_TOKEN")) {
+		log.Fatal("AUTHRAIL_OPERATOR_TOKEN must be a separate secret of at least 32 characters")
+	}
 	var executorPublicKey []byte
 	var executorPublicKeys []ed25519.PublicKey
 	if adapterToken != "" {
@@ -82,6 +87,12 @@ func main() {
 	})
 	if adapterToken != "" {
 		mux.Handle("POST /evaluate", sidecar.EvaluationHandler(synchronizer, adapterToken))
+	}
+	if operatorToken != "" {
+		handler := sidecar.OperatorGapHandler(synchronizer, operatorToken)
+		mux.Handle("GET /observations/gaps", handler)
+		mux.Handle("GET /observations/gaps/history", handler)
+		mux.Handle("POST /observations/gaps/acknowledgements", handler)
 	}
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

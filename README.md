@@ -31,9 +31,14 @@ and deployment IDs, trusted signing-key fingerprint, and a durable state path:
 | `AUTHRAIL_ADAPTER_TOKEN` | Separate secret shared with your local adapter to enable Observe checks |
 | `AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE` | PEM Ed25519 public key for assertions signed by your protected application |
 | `AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` | Optional previous public key while changing the application key |
+| `AUTHRAIL_OPERATOR_TOKEN` | Separate secret for reviewing local recording gaps; at least 32 characters |
+
+The short-lived AI system discovery setup key belongs only to the protected
+application's SDK setup request. Never put it in the sidecar environment; it
+cannot replace the deployment credential or authorize an action.
 
 Keep the credential away from the agent and its tools. Keep the state file and
-its adjacent `.observations` retry file on private storage that survives
+its adjacent `.observations` retry and `.observation-gaps` review files on private storage that survives
 restarts. The containing directory must be private to the sidecar process.
 Give each sidecar instance its own state path; do not share one file between
 processes.
@@ -62,6 +67,12 @@ expired, or changed assertions before checking Rails. Derive those references
 from your application's authenticated session and resource lookup. A signature
 shows which application key asserted them; it does not authenticate the person
 on its own.
+The signed attribution also carries `principalSource` as
+`application_session` or `service_identity`. Set `resourceSource` to
+`application_lookup` with the target ID from the reviewed Operation argument,
+or `not_applicable` with no target when the Operation has no resource identity.
+Missing claims or a target that differs from the argument leave coverage
+unavailable. Such a check is not uploaded as a covered decision.
 The local `/health` response shows `executorKeySha256s`; compare them with the
 fingerprints on the deployment page. This is configuration evidence, not proof
 of interception. To change keys, add the new public key on that page, switch
@@ -73,7 +84,20 @@ key is accepted for at most 24 hours. Check `pendingReports: 0` and
 compromised, revoke it immediately on the deployment page; queued reports
 signed by that key become recording gaps that require review.
 
-**Current build:** the local endpoint evaluates calls and results against the
+To review those gaps, set `AUTHRAIL_OPERATOR_TOKEN` to a secret that is different
+from the deployment and adapter tokens. Give it only to the operator. The
+loopback endpoint `GET /observations/gaps` lists each blocked action key, phase,
+input digest, and application key fingerprint. It does not expose tool input or
+result. After comparing a gap with your application logs, send its exact action
+key, phase, and input digest with a reason to
+`POST /observations/gaps/acknowledgements`. The sidecar writes the review to its
+private `.observation-gaps` file before freeing queue space. Acknowledging a
+gap does not create an AuthRail Action or certificate, and it cannot turn a
+revoked-key report into verified evidence. `GET /observations/gaps/history`
+shows the latest 100 local acknowledgements. All three endpoints require the
+operator token as a Bearer token. Check every sidecar instance separately.
+
+The local endpoint evaluates calls and results against the
 active signed Rails in Observe mode. It reports what the Rails would decide,
 including missing context and uncovered Operations. For a covered action, the
 sidecar sends the decision and a digest of the checked input to AuthRail. It
@@ -83,9 +107,10 @@ report was retained, queued for retry, or unavailable. A retained response has
 the Action and certificate IDs. `/health` shows the number of pending reports.
 Reports rejected after a key closes remain in the private queue with a blocked
 reason and appear in `blockedReports`; they are not silently deleted or certified.
-The queue holds at most 512 reports or 16 MiB, rejects new reports when full,
-and never drops old ones automatically. Recording failure does not stop the action. No published binary or container
-image is included yet.
+The queue holds at most 512 reports or 16 MiB and rejects new reports when full.
+Its private review history is also bounded; if it fills or becomes inaccessible,
+the blocked report remains in the queue. Recording failure does not stop the
+customer's action. No published binary or container image is included yet.
 
 For implementation details, see [Architecture](ARCHITECTURE.md). To work on
 the project, see [Contributing](CONTRIBUTING.md).

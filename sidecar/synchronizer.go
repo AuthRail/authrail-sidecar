@@ -120,6 +120,9 @@ func NewSynchronizer(options Options) (*Synchronizer, error) {
 		status: "not_synchronized"}
 	s.observeMu.Lock()
 	err = s.ensureObserveQueueLocked()
+	if err == nil {
+		err = s.reconcileAcknowledgedGapsLocked()
+	}
 	s.observeMu.Unlock()
 	if err != nil {
 		return nil, err

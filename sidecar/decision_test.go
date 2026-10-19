@@ -152,7 +152,42 @@ func call(amount int) EvaluationRequest {
 	args, _ := json.Marshal(map[string]any{"amount": amount})
 	return EvaluationRequest{FormatVersion: 1, RequestID: decisionRequestID,
 		OperationVersionID: decisionOperationID, Phase: "tool_call", Arguments: args,
-		Attribution: Attribution{PrincipalID: "staff_123", SessionID: "task_123"}}
+		Attribution: Attribution{PrincipalID: "staff_123", SessionID: "task_123",
+			PrincipalSource: "application_session", ResourceSource: "not_applicable"}}
+}
+
+func TestObserveIdentityCoverage(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "owner", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "resource", "path": []string{"id"}},
+				"comparison": "eq", "right": map[string]any{"kind": "field",
+					"field": map[string]any{"root": "arguments", "path": []string{"invoiceId"}}}},
+			"outcome": "allow"}})
+	policy["operationContract"].(map[string]any)["resourceIdentity"] = map[string]any{
+		"type": "invoice", "field": []string{"invoiceId"}}
+	syncer := decisionSynchronizer(t, []map[string]any{policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"invoiceId":"invoice_123"}`)
+	resource := "invoice_123"
+	request.Attribution.ResourceID = &resource
+	request.Attribution.ResourceSource = "application_lookup"
+	matched, err := syncer.Evaluate(request)
+	if err != nil || matched.Coverage != "evaluated" || matched.Outcome != "allow" {
+		t.Fatalf("resolved resource was not evaluated: %+v %v", matched, err)
+	}
+	request.Attribution.PrincipalSource = ""
+	missing, err := syncer.Evaluate(request)
+	if err != nil || missing.Coverage != "unavailable" || missing.Outcome != "additional_context_required" {
+		t.Fatalf("missing caller was evaluated: %+v %v", missing, err)
+	}
+	request.Attribution.PrincipalSource = "application_session"
+	other := "invoice_456"
+	request.Attribution.ResourceID = &other
+	mismatch, err := syncer.Evaluate(request)
+	if err != nil || mismatch.Coverage != "unavailable" || mismatch.Outcome != "additional_context_required" {
+		t.Fatalf("mismatched resource was evaluated: %+v %v", mismatch, err)
+	}
 }
 
 func TestObserveCompositionKeepsGuardAndPolicyDistinct(t *testing.T) {
@@ -267,6 +302,11 @@ func TestExecutorProofRejectsSpoofedIdentityAndReplay(t *testing.T) {
 	changed.Attribution.PrincipalID = "other_staff"
 	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
 		t.Fatal("changed principal passed executor proof")
+	}
+	changed = signed
+	changed.Attribution.PrincipalSource = "service_identity"
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed caller source passed executor proof")
 	}
 	changed = signed
 	changed.Arguments = json.RawMessage(`{"amount":500}`)

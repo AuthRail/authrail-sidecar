@@ -158,7 +158,10 @@ func (s *Synchronizer) saveObserveQueueLocked(state observeQueueState) error {
 	if err != nil || len(data) > maxObserveQueueBytes {
 		return errors.New("Observe report queue is full")
 	}
-	path := s.observeQueuePath()
+	return savePrivateState(s.observeQueuePath(), data)
+}
+
+func savePrivateState(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return errors.New("Observe queue directory cannot be created")

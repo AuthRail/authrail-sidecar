@@ -38,6 +38,12 @@ configured Ed25519 public key before evaluating or retaining a report. The
 protected application must authenticate its own principal and resolve its
 resource before signing. This proof establishes that its key asserted the
 references; it does not independently authenticate the person or prove execution.
+A signed source names the authenticated session or service identity and whether
+the target came from an application lookup or is not applicable. The sidecar
+compares a required resource ID to the exact reviewed Operation argument field.
+Missing or mismatched claims leave coverage unavailable and create no central
+certificate. Only signed principal and resource IDs are available to local Rail
+conditions; other attributes remain unresolved.
 A separate adapter
 secret protects this loopback endpoint. A caller-supplied action key travels
 in the `Idempotency-Key` header. The deployment credential authenticates both
@@ -73,3 +79,9 @@ overlap. Once closed, a new report under it receives a specific permanent
 response. The queue retains that metadata-only report with a blocked reason,
 excludes it from retries, and exposes the count in `/health`. Each instance
 owns its queue; the server does not infer that all instances have drained.
+An operator uses a separate local token to list blocked metadata, review it
+against independent application records, and acknowledge the gap with a reason.
+The sidecar first writes a bounded, private acknowledgement history, then
+removes the blocked queue entry. A restart finishes removal if it stopped
+between those writes. An inaccessible or full history leaves the report
+blocked. This local record is neither a central Action nor a certificate.

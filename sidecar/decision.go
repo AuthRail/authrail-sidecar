@@ -21,9 +21,11 @@ type EvaluationRequest struct {
 }
 
 type Attribution struct {
-	PrincipalID string  `json:"principalId"`
-	SessionID   string  `json:"sessionId"`
-	ResourceID  *string `json:"resourceId"`
+	PrincipalID     string  `json:"principalId"`
+	SessionID       string  `json:"sessionId"`
+	ResourceID      *string `json:"resourceId"`
+	PrincipalSource string  `json:"principalSource,omitempty"`
+	ResourceSource  string  `json:"resourceSource,omitempty"`
 }
 
 type Evaluation struct {
@@ -56,6 +58,10 @@ type railBinding struct {
 	Kind               string `json:"kind"`
 	OperationContract  struct {
 		RequiredCoverage []string `json:"requiredCoverage"`
+		ResourceIdentity *struct {
+			Type  string   `json:"type"`
+			Field []string `json:"field"`
+		} `json:"resourceIdentity"`
 	} `json:"operationContract"`
 	Content struct {
 		Rules []json.RawMessage `json:"rules"`
@@ -135,6 +141,8 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 	response.Sequence = manifest.Sequence
 	response.Coverage = "uncovered"
 	response.ReasonCodes = []string{"operation_uncovered"}
+	identityMissing := request.Attribution.PrincipalSource != "application_session" &&
+		request.Attribution.PrincipalSource != "service_identity"
 	var policyFound, denied, contextMissing, approval, policyAllowed bool
 	for _, raw := range manifest.Rails {
 		var rail railBinding
@@ -150,6 +158,19 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 		}
 		response.Coverage = "evaluated"
 		response.RailVersionIDs = append(response.RailVersionIDs, rail.VersionID)
+		if rail.OperationContract.ResourceIdentity == nil {
+			if request.Attribution.ResourceID != nil || request.Attribution.ResourceSource != "not_applicable" {
+				identityMissing = true
+			}
+		} else {
+			resource := rail.OperationContract.ResourceIdentity
+			value, unresolved := resolve(field{Root: "arguments", Path: resource.Field}, arguments, result)
+			resourceID, valid := value.(string)
+			if len(unresolved) > 0 || request.Attribution.ResourceSource != "application_lookup" ||
+				request.Attribution.ResourceID == nil || !valid || resourceID != *request.Attribution.ResourceID {
+				identityMissing = true
+			}
+		}
 		if rail.Kind == "data" {
 			continue
 		}
@@ -159,7 +180,7 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 		if rail.Kind == "policy" {
 			policyFound = true
 		}
-		evaluated, err := evaluateRules(rail, request.Phase, arguments, result)
+		evaluated, err := evaluateRules(rail, request.Phase, arguments, result, request.Attribution)
 		if err != nil {
 			return invalidBundle(response), nil
 		}
@@ -179,6 +200,14 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 		}
 	}
 	if response.Coverage != "evaluated" {
+		return response, nil
+	}
+	if identityMissing {
+		response.Coverage = "unavailable"
+		response.Outcome = "additional_context_required"
+		response.ReasonCodes = []string{"identity_unverified"}
+		response.Unresolved = []UnresolvedField{{Root: "principal", Path: []string{"id"}, Reason: "unavailable"},
+			{Root: "resource", Path: []string{"id"}, Reason: "unavailable"}}
 		return response, nil
 	}
 	switch {
@@ -213,7 +242,7 @@ func invalidBundle(value Evaluation) Evaluation {
 	return value
 }
 
-func evaluateRules(rail railBinding, phase string, args, result map[string]any) (ruleResult, error) {
+func evaluateRules(rail railBinding, phase string, args, result map[string]any, attribution Attribution) (ruleResult, error) {
 	if len(rail.Content.Rules) == 0 {
 		return ruleResult{}, errors.New("rules are missing")
 	}
@@ -233,7 +262,7 @@ func evaluateRules(rail railBinding, phase string, args, result map[string]any) 
 				Path: []string{"priorReadOperationVersionIds"}, Reason: "missing"})
 			continue
 		}
-		matched, unresolved, err := evaluateCondition(rule.When, args, result, 0)
+		matched, unresolved, err := evaluateCondition(rule.When, args, result, attribution, 0)
 		if err != nil {
 			return output, err
 		}
@@ -273,7 +302,7 @@ func evaluateRules(rail railBinding, phase string, args, result map[string]any) 
 	return output, nil
 }
 
-func evaluateCondition(raw json.RawMessage, args, result map[string]any, depth int) (bool, []UnresolvedField, error) {
+func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribution Attribution, depth int) (bool, []UnresolvedField, error) {
 	if depth > 8 {
 		return false, nil, errors.New("condition is too deep")
 	}
@@ -289,7 +318,7 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, depth i
 		anyTrue, anyFalse := false, false
 		var unresolved []UnresolvedField
 		for _, child := range node.Conditions {
-			matched, missing, err := evaluateCondition(child, args, result, depth+1)
+			matched, missing, err := evaluateCondition(child, args, result, attribution, depth+1)
 			if err != nil {
 				return false, nil, err
 			}
@@ -318,17 +347,17 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, depth i
 		}
 		return false, nil, nil
 	case "not":
-		matched, unresolved, err := evaluateCondition(node.Condition, args, result, depth+1)
+		matched, unresolved, err := evaluateCondition(node.Condition, args, result, attribution, depth+1)
 		if err != nil || len(unresolved) > 0 {
 			return false, unresolved, err
 		}
 		return !matched, nil, nil
 	case "compare":
-		left, leftMissing := resolve(node.Left, args, result)
+		left, leftMissing := resolveIdentity(node.Left, args, result, attribution)
 		var right any
 		var rightMissing []UnresolvedField
 		if node.Right.Kind == "field" {
-			right, rightMissing = resolve(node.Right.Field, args, result)
+			right, rightMissing = resolveIdentity(node.Right.Field, args, result, attribution)
 		} else if node.Right.Kind == "literal" {
 			if err := json.Unmarshal(node.Right.Value, &right); err != nil {
 				return false, nil, err
@@ -428,6 +457,20 @@ func resolve(f field, args, result map[string]any) (any, []UnresolvedField) {
 		value = next
 	}
 	return value, nil
+}
+
+func resolveIdentity(f field, args, result map[string]any, attribution Attribution) (any, []UnresolvedField) {
+	if len(f.Path) == 1 && f.Path[0] == "id" {
+		switch f.Root {
+		case "principal":
+			return attribution.PrincipalID, nil
+		case "resource":
+			if attribution.ResourceID != nil {
+				return *attribution.ResourceID, nil
+			}
+		}
+	}
+	return resolve(f, args, result)
 }
 
 func object(raw json.RawMessage) (map[string]any, error) {
