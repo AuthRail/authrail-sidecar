@@ -20,6 +20,7 @@ type EvaluationRequest struct {
 	Trajectory         *TrajectorySnapshot `json:"trajectory,omitempty"`
 	Attribution        Attribution         `json:"attribution"`
 	IdentityProof      IdentityProof       `json:"identityProof"`
+	ReviewSummary      *ReviewSummary      `json:"reviewSummary,omitempty"`
 }
 
 type Attribution struct {
@@ -31,24 +32,25 @@ type Attribution struct {
 }
 
 type Evaluation struct {
-	RequestID       string            `json:"requestId"`
-	Mode            string            `json:"mode"`
-	Enforced        bool              `json:"enforced"`
-	Coverage        string            `json:"coverage"`
-	Outcome         string            `json:"outcome"`
-	Sequence        int64             `json:"sequence"`
-	BundleID        *string           `json:"bundleId"`
-	RailVersionIDs  []string          `json:"railVersionIds"`
-	MatchedRuleIDs  []string          `json:"matchedRuleIds"`
-	ReasonCodes     []string          `json:"reasonCodes"`
-	Unresolved      []UnresolvedField `json:"unresolved"`
-	Facts           []FactSummary     `json:"facts,omitempty"`
-	RecordingStatus string            `json:"recordingStatus,omitempty"`
-	ReportReplayed  *bool             `json:"reportReplayed,omitempty"`
-	ActionID        string            `json:"actionId,omitempty"`
-	CertificateID   string            `json:"certificateId,omitempty"`
-	readResult      bool              `json:"-"`
-	readCall        bool              `json:"-"`
+	RequestID         string            `json:"requestId"`
+	Mode              string            `json:"mode"`
+	Enforced          bool              `json:"enforced"`
+	Coverage          string            `json:"coverage"`
+	Outcome           string            `json:"outcome"`
+	Sequence          int64             `json:"sequence"`
+	BundleID          *string           `json:"bundleId"`
+	RailVersionIDs    []string          `json:"railVersionIds"`
+	MatchedRuleIDs    []string          `json:"matchedRuleIds"`
+	ReasonCodes       []string          `json:"reasonCodes"`
+	Unresolved        []UnresolvedField `json:"unresolved"`
+	Facts             []FactSummary     `json:"facts,omitempty"`
+	RecordingStatus   string            `json:"recordingStatus,omitempty"`
+	ReportReplayed    *bool             `json:"reportReplayed,omitempty"`
+	ActionID          string            `json:"actionId,omitempty"`
+	ApprovalRequestID *string           `json:"approvalRequestId,omitempty"`
+	CertificateID     string            `json:"certificateId,omitempty"`
+	readResult        bool              `json:"-"`
+	readCall          bool              `json:"-"`
 }
 
 type UnresolvedField struct {

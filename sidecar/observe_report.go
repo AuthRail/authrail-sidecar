@@ -14,9 +14,10 @@ import (
 )
 
 type retainedObserve struct {
-	ActionID      string `json:"actionId"`
-	CertificateID string `json:"certificateId"`
-	Replayed      bool   `json:"replayed"`
+	ActionID          string  `json:"actionId"`
+	CertificateID     string  `json:"certificateId"`
+	ApprovalRequestID *string `json:"approvalRequestId"`
+	Replayed          bool    `json:"replayed"`
 }
 
 var errExecutorKeyClosed = errors.New("application key no longer accepts reports")
@@ -41,6 +42,7 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 		Attribution          Attribution          `json:"attribution"`
 		IdentityVerification IdentityVerification `json:"identityVerification"`
 		ExecutorProof        IdentityProof        `json:"executorProof"`
+		ReviewSummary        *ReviewSummary       `json:"reviewSummary,omitempty"`
 		Report               struct {
 			OperationVersionID string     `json:"operationVersionId"`
 			Phase              string     `json:"phase"`
@@ -48,7 +50,7 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 		} `json:"report"`
 	}{FormatVersion: 1, InputSHA256: hex.EncodeToString(digest[:]),
 		Attribution: request.Attribution, IdentityVerification: s.identityVerification(request, actionKey),
-		ExecutorProof: request.IdentityProof, Report: struct {
+		ExecutorProof: request.IdentityProof, ReviewSummary: request.ReviewSummary, Report: struct {
 			OperationVersionID string     `json:"operationVersionId"`
 			Phase              string     `json:"phase"`
 			Evaluation         Evaluation `json:"evaluation"`
@@ -111,7 +113,9 @@ func (s *Synchronizer) sendObserve(ctx context.Context, entry queuedObserve) (re
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&retained); err != nil ||
 		!uuidPattern.MatchString(retained.ActionID) ||
-		!uuidPattern.MatchString(retained.CertificateID) {
+		!uuidPattern.MatchString(retained.CertificateID) ||
+		(retained.ApprovalRequestID != nil &&
+			!uuidPattern.MatchString(*retained.ApprovalRequestID)) {
 		return retainedObserve{}, errors.New("control plane receipt is invalid")
 	}
 	return retained, nil

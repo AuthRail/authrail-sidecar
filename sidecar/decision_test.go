@@ -116,12 +116,17 @@ func signedCallWithKey(t *testing.T, syncer *Synchronizer, request EvaluationReq
 	digest := sha256.Sum256(input)
 	now := syncer.options.Now().Unix()
 	request.IdentityProof = IdentityProof{IssuedAt: now, ExpiresAt: now + 30}
+	reviewDigest, err := reviewSummaryDigest(request.ReviewSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
 	statement := identityStatement{Type: "authrail.observe.executor.v1",
 		OrganisationID: syncer.options.OrganisationID, DeploymentID: syncer.options.DeploymentID,
 		RequestID: request.RequestID, ActionKey: actionKey,
 		OperationVersionID: request.OperationVersionID, Phase: request.Phase,
 		InputSHA256: hex.EncodeToString(digest[:]), Attribution: request.Attribution,
-		IssuedAt: now, ExpiresAt: now + 30}
+		ReviewSummarySHA256: reviewDigest,
+		IssuedAt:            now, ExpiresAt: now + 30}
 	message, err := json.Marshal(statement)
 	if err != nil {
 		t.Fatal(err)

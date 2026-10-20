@@ -35,17 +35,18 @@ func (s *Synchronizer) identityVerification(request EvaluationRequest, actionKey
 }
 
 type identityStatement struct {
-	Type               string      `json:"type"`
-	OrganisationID     string      `json:"organisationId"`
-	DeploymentID       string      `json:"deploymentId"`
-	RequestID          string      `json:"requestId"`
-	ActionKey          string      `json:"actionKey"`
-	OperationVersionID string      `json:"operationVersionId"`
-	Phase              string      `json:"phase"`
-	InputSHA256        string      `json:"inputSha256"`
-	Attribution        Attribution `json:"attribution"`
-	IssuedAt           int64       `json:"issuedAt"`
-	ExpiresAt          int64       `json:"expiresAt"`
+	Type                string      `json:"type"`
+	OrganisationID      string      `json:"organisationId"`
+	DeploymentID        string      `json:"deploymentId"`
+	RequestID           string      `json:"requestId"`
+	ActionKey           string      `json:"actionKey"`
+	OperationVersionID  string      `json:"operationVersionId"`
+	Phase               string      `json:"phase"`
+	InputSHA256         string      `json:"inputSha256"`
+	Attribution         Attribution `json:"attribution"`
+	ReviewSummarySHA256 string      `json:"reviewSummarySha256,omitempty"`
+	IssuedAt            int64       `json:"issuedAt"`
+	ExpiresAt           int64       `json:"expiresAt"`
 }
 
 func LoadExecutorPublicKey(path string) (ed25519.PublicKey, error) {
@@ -98,12 +99,17 @@ func (s *Synchronizer) matchExecutorKey(request EvaluationRequest, actionKey str
 		return nil, err
 	}
 	digest := sha256.Sum256(input)
+	reviewDigest, err := reviewSummaryDigest(request.ReviewSummary)
+	if err != nil || request.ReviewSummary != nil && request.Phase != "tool_call" {
+		return nil, errors.New("executor identity proof is invalid")
+	}
 	statement := identityStatement{Type: "authrail.observe.executor.v1",
 		OrganisationID: s.options.OrganisationID, DeploymentID: s.options.DeploymentID,
 		RequestID: request.RequestID, ActionKey: actionKey,
 		OperationVersionID: request.OperationVersionID, Phase: request.Phase,
 		InputSHA256: hex.EncodeToString(digest[:]), Attribution: request.Attribution,
-		IssuedAt: proof.IssuedAt, ExpiresAt: proof.ExpiresAt}
+		ReviewSummarySHA256: reviewDigest,
+		IssuedAt:            proof.IssuedAt, ExpiresAt: proof.ExpiresAt}
 	message, err := json.Marshal(statement)
 	if err != nil {
 		return nil, errors.New("executor identity proof is invalid")

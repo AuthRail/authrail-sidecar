@@ -82,6 +82,7 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			r.Header.Get("Idempotency-Key"), request, evaluation); status == "retained" {
 			evaluation.RecordingStatus = status
 			evaluation.ActionID = retained.ActionID
+			evaluation.ApprovalRequestID = retained.ApprovalRequestID
 			evaluation.CertificateID = retained.CertificateID
 			evaluation.ReportReplayed = &retained.Replayed
 		} else {

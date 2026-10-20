@@ -112,6 +112,18 @@ The Node Enforce adapter requires `retained` before proceeding, so an outage
 stops its protected path. A result-phase stop cannot undo a tool effect.
 Monitor the customer deployment's health and logs as well as local `/health`.
 
+For a retained approval wait, the protected adapter can send a fresh signed
+bounded `reviewSummary` on its Enforce call. The sidecar verifies its digest
+as part of the executor signature and forwards the summary for named human
+reviewers; it does not upload raw call arguments or results. Missing or invalid
+review context leaves the request unavailable. The protected adapter can send a
+fresh signed claim to local `POST /approval-permits/claim` with its adapter token. The
+sidecar forwards that claim with its deployment credential; the agent never
+receives that credential. The server consumes an approved request once and
+returns a short-lived permit. The sidecar never retries a claim after an
+uncertain response. A permit says the call may proceed; it does not prove the
+protected function ran.
+
 ## Recover recording gaps
 
 During application-key rotation, keep the old public key available only while
