@@ -176,3 +176,62 @@ func TestTrajectoryLedgerRejectsReadResultWithoutMatchingCall(t *testing.T) {
 		t.Fatalf("history gap cleared a prior-read rule: %+v", result)
 	}
 }
+
+func TestTrajectoryLedgerAppliesReviewedPriorActivityAndRejectsUnprovenEffects(t *testing.T) {
+	guard := decisionRail("00000000-0000-4000-8000-000000000100",
+		"00000000-0000-4000-8000-000000000101", "guard", []map[string]any{{
+			"id": "sensitivePast", "phase": "tool_call", "outcome": "deny",
+			"when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "trajectory", "path": []string{"sensitiveDataSeen"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": true}}}})
+	guard["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "trajectory"}
+	guard["operationContract"].(map[string]any)["availableFields"] = []map[string]any{{
+		"root": "trajectory", "path": []string{"sensitiveDataSeen"}, "type": "boolean"}}
+	policy := decisionRail("00000000-0000-4000-8000-000000000102",
+		"00000000-0000-4000-8000-000000000103", "policy", []map[string]any{{
+			"id": "ordinary", "when": decisionCondition("gt", 0), "outcome": "allow"}})
+	policy["operationContract"].(map[string]any)["availableFields"] =
+		guard["operationContract"].(map[string]any)["availableFields"]
+	syncer := decisionSynchronizer(t, []map[string]any{guard, policy})
+	request := call(50)
+	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
+		Start: true, Complete: true, PriorReadOperationVersionIDs: []string{},
+		Values: map[string]any{"sensitiveDataSeen": true}}
+	if result := ledgerDecision(t, syncer, request); result.Outcome != "deny" || result.Coverage != "evaluated" {
+		t.Fatalf("reviewed prior activity was not applied: %+v", result)
+	}
+	request.RequestID = ledgerTargetRequestID
+	request.Trajectory.Start = false
+	request.Trajectory.Values = nil
+	if result := ledgerDecision(t, syncer, request); result.Outcome != "additional_context_required" {
+		t.Fatalf("missing prior activity was treated as clear: %+v", result)
+	}
+	request.Trajectory.Values = map[string]any{"unreviewedEffect": true}
+	encoded, err := json.Marshal(signedCall(t, syncer, request, "invoice-123"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(encoded))
+	httpRequest.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	httpRequest.Header.Set("Idempotency-Key", "invoice-123")
+	response := httptest.NewRecorder()
+	EvaluationHandler(syncer, "abcdefghijklmnopqrstuvwxyz012345").ServeHTTP(response, httpRequest)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unreviewed activity was accepted: %d", response.Code)
+	}
+	request.Trajectory.Values = nil
+	encoded, err = json.Marshal(signedCall(t, syncer, request, "invoice-123"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = bytes.Replace(encoded, []byte("{"),
+		[]byte(`{"priorEffects":[{"kind":"write"}],`), 1)
+	httpRequest = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(encoded))
+	httpRequest.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	httpRequest.Header.Set("Idempotency-Key", "invoice-123")
+	response = httptest.NewRecorder()
+	EvaluationHandler(syncer, "abcdefghijklmnopqrstuvwxyz012345").ServeHTTP(response, httpRequest)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unproven prior effects were accepted: %d", response.Code)
+	}
+}

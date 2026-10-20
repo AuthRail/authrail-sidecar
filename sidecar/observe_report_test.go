@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClosedKeyReportBecomesVisibleLocalGap(t *testing.T) {
@@ -111,6 +113,80 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 	if evaluation.RecordingStatus != "retained" || evaluation.ActionID == "" ||
 		evaluation.CertificateID == "" {
 		t.Fatalf("retained report was not disclosed: %+v", evaluation)
+	}
+}
+
+func TestObserveReportRetainsReviewedExtractionWithoutDocumentOrModelOutput(t *testing.T) {
+	sourceVersionID := "00000000-0000-4000-8000-000000000130"
+	dataVersionID := "00000000-0000-4000-8000-000000000131"
+	data := decisionRail("00000000-0000-4000-8000-000000000132", dataVersionID, "data", nil)
+	data["sourceContextVersionId"] = sourceVersionID
+	data["sourceContextContract"] = map[string]any{
+		"formatVersion": 5, "kind": "extraction", "sourceIdentity": "support.messages",
+		"accountBoundary": "tenant_123", "lookup": "message.read",
+		"queryField": map[string]any{"root": "arguments", "path": []string{"messageId"}},
+		"factKey":    "sensitive", "resultPath": []string{"sensitive"}, "valueType": "boolean",
+		"modelId": "model.v1", "modelConfigSha256": strings.Repeat("a", 64),
+		"promptVersion": "prompt.v1", "maxInputBytes": 4096, "maxOutputBytes": 256,
+		"maxAgeSeconds": 60, "timeoutMs": 2000, "failure": "unavailable"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000133",
+		"00000000-0000-4000-8000-000000000134", "policy", []map[string]any{{
+			"id": "ordinary", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"sensitive"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": false}},
+			"outcome": "allow"}})
+	policy["content"].(map[string]any)["factBindings"] = []map[string]any{{
+		"factKey": "sensitive", "dataRailVersionId": dataVersionID}}
+	syncer := decisionSynchronizer(t, []map[string]any{data, policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"messageId":"msg_123","privateText":"do not retain this"}`)
+	request.FactResolutions = []FactResolution{{SourceVersionID: sourceVersionID,
+		SourceIdentity: "support.messages", AccountBoundary: "tenant_123",
+		Lookup: "message.read", LookupKey: "msg_123", AuthenticatedExecutor: true,
+		Status: "ok", ObservedAt: syncer.options.Now().Add(-20 * time.Second).Format(time.RFC3339Nano),
+		Value: map[string]any{"sensitive": false}, Extraction: &ExtractionProvenance{
+			SourceSHA256: strings.Repeat("b", 64), SourceBytes: 120,
+			SourceLocation: "message:msg_123", ModelID: "model.v1",
+			ModelConfigSHA256: strings.Repeat("a", 64), PromptVersion: "prompt.v1",
+			ExtractedAt: syncer.options.Now().Add(-10 * time.Second).Format(time.RFC3339Nano)}}}
+	reports := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reports++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		if bytes.Contains(body, []byte("privateText")) || bytes.Contains(body, []byte("do not retain")) ||
+			bytes.Contains(body, []byte(`"sensitive":false`)) {
+			t.Error("document or model assertion reached the control plane")
+		}
+		var report struct {
+			Report struct {
+				Evaluation Evaluation `json:"evaluation"`
+			} `json:"report"`
+		}
+		if err := json.Unmarshal(body, &report); err != nil ||
+			len(report.Report.Evaluation.Facts) != 1 || report.Report.Evaluation.Facts[0].Extraction == nil ||
+			report.Report.Evaluation.Facts[0].Extraction.SourceLocation != "message:msg_123" {
+			t.Errorf("extraction provenance was not reported: %s", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"actionId":"00000000-0000-4000-8000-000000000020","certificateId":"00000000-0000-4000-8000-000000000021","replayed":false}`))
+	}))
+	defer server.Close()
+	syncer.options.ControlPlaneURL = server.URL
+	syncer.options.Token = "deployment-secret"
+	syncer.options.Client = server.Client()
+	requestBody, _ := json.Marshal(signedCall(t, syncer, request, "message-123"))
+	httpRequest := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(requestBody))
+	httpRequest.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
+	httpRequest.Header.Set("Idempotency-Key", "message-123")
+	response := httptest.NewRecorder()
+	EvaluationHandler(syncer, strings.Repeat("a", 32)).ServeHTTP(response, httpRequest)
+	var evaluation Evaluation
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &evaluation) != nil ||
+		evaluation.Outcome != "allow" || evaluation.RecordingStatus != "retained" || reports != 1 {
+		t.Fatalf("signed extraction report was not retained: %d %+v, reports=%d", response.Code, evaluation, reports)
 	}
 }
 

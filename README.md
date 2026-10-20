@@ -121,6 +121,9 @@ hooks per session. Never clear the ledger to recover an existing instance.
 AuthRail cannot detect a read that bypasses the adapter; check actual hook
 coverage before relying on a prior-read rule. Session values remain signed
 application claims, not independently verified model output.
+Earlier business effects are not inferred from a tool result or this ledger.
+They require a separate authenticated execution receipt before they can be
+used as prior-effect decision context.
 For AI-assisted Data Rails, the protected application sends only a typed fact
 and bounded extraction provenance from the exact reviewed Context Source.
 The sidecar checks the source and account, model/settings and instructions
