@@ -40,6 +40,8 @@ type trajectoryLedger struct {
 
 func (s *Synchronizer) trajectoryLedgerPath() string { return s.options.StateFile + ".trajectory" }
 
+// loadTrajectoryLedgerLocked fails closed if a started ledger disappears;
+// otherwise a restart could make an incomplete session look complete.
 func (s *Synchronizer) loadTrajectoryLedgerLocked() error {
 	if s.trajectoryLoaded {
 		if s.trajectoryState.Sessions != nil && len(s.trajectoryState.Sessions) > 0 {

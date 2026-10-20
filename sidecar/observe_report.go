@@ -57,6 +57,7 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 		return retained, "unavailable"
 	}
 	entry := queuedObserve{ActionKey: actionKey, Phase: request.Phase, Body: body}
+	// Persist before upload so a process crash cannot turn an accepted check into a silent gap.
 	entry, err = s.enqueueObserve(entry)
 	if err != nil {
 		return retained, "unavailable"

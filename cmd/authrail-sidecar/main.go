@@ -76,6 +76,7 @@ func main() {
 		log.Fatal("sidecar health listener could not start")
 	}
 	if !listener.Addr().(*net.TCPAddr).IP.IsLoopback() {
+		// The adapter and operator tokens are only safe on a local listener.
 		listener.Close()
 		log.Fatal("sidecar health listener must bind to loopback")
 	}
@@ -118,6 +119,21 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-retryTicker.C:
+			}
+		}
+	}()
+	go func() {
+		signalTicker := time.NewTicker(30 * time.Second)
+		// Health delivery is independent of decision and report processing.
+		defer signalTicker.Stop()
+		for {
+			if err := synchronizer.ReportSignal(ctx); err != nil && ctx.Err() == nil {
+				log.Print("sidecar signal could not be delivered")
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-signalTicker.C:
 			}
 		}
 	}()

@@ -33,6 +33,8 @@ type observeQueueState struct {
 
 func (s *Synchronizer) observeQueuePath() string { return s.options.StateFile + ".observations" }
 
+// ensureObserveQueueLocked rejects changed or unsafe disk state rather than
+// silently losing reports that may not have reached AuthRail.
 func (s *Synchronizer) ensureObserveQueueLocked() error {
 	if s.observeQueueLoaded {
 		return nil

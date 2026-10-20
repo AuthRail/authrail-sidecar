@@ -1,142 +1,124 @@
 # AuthRail Sidecar
 
-AuthRail Sidecar runs beside your AI application. It receives the Rails you
-activate in AuthRail and provides a local place for your application to check
-protected actions. Your tools and provider accounts stay in your environment.
+Run AuthRail checks beside your AI application, without sending tool inputs or
+provider credentials to AuthRail. The sidecar receives signed Rails for one
+deployment, evaluates action calls and results on the same host, and reports
+bounded decision records back to AuthRail.
 
-An AuthRail adapter connects your application to the sidecar. The adapter
-identifies the action; the sidecar evaluates the active Rails; your application
-receives the decision. In Observe mode, the decision is advisory and your
-application continues its normal flow.
+Your application still owns the workflow and the protected function. In
+**Observe** mode, checks show what the Rails would decide; they do not block
+the function or prove it executed.
 
-## Run from source
+## How it fits
 
-This repository uses Go 1.26 or later. Build the sidecar with:
+```text
+AuthRail ── signed Rails ──▶ sidecar ◀── local adapter ◀── protected application
+                               │                                 │
+                               └── decision report ──▶ AuthRail   └── tool/provider
+```
+
+The sidecar and an adapter work together: the sidecar owns local decisions and
+report delivery; the adapter places checks at the application's actual action
+boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node)
+or [Go SDK](https://github.com/AuthRail/authrail-sdk-go), or implement the same
+local decision protocol. The sidecar is not a hosted decision endpoint or a
+shared service for unrelated deployments.
+
+## Before you start
+
+1. In AuthRail, review the action and its Rails, create an Observe deployment,
+   and obtain its deployment credential and trusted signing-key fingerprint.
+2. Generate an Ed25519 key pair for the protected application. Register the
+   public key on the deployment page. Give the sidecar only that public key;
+   keep the private key in the application.
+3. Create a separate random adapter token of at least 32 characters. It lets
+   the application call the sidecar locally; it is not the deployment credential.
+4. Choose a private, persistent state path for each sidecar instance. Its
+   adjacent report queue, recording-gap history, and trajectory ledger must
+   survive restarts.
+
+Do not give deployment, adapter, operator, or provider credentials to the
+agent. If it can bypass the protected executor, treat the deployment as
+advisory even when the sidecar is healthy.
+
+## Build and run
+
+Go 1.26 or newer is required to build from source:
 
 ```bash
 go build -o authrail-sidecar ./cmd/authrail-sidecar
 ```
 
-Give the process its AuthRail API address, deployment credential, organisation
-and deployment IDs, trusted signing-key fingerprint, and a durable state path:
+Configure the process before starting it:
 
-| Environment variable | Value |
+| Variable | Purpose |
 | --- | --- |
-| `AUTHRAIL_CONTROL_PLANE_URL` | AuthRail API address |
-| `AUTHRAIL_DEPLOYMENT_TOKEN` | Credential for this deployment |
-| `AUTHRAIL_ORGANISATION_ID` | Organisation ID |
-| `AUTHRAIL_DEPLOYMENT_ID` | Deployment ID |
-| `AUTHRAIL_TRUSTED_KEY_SHA256` | Trusted signing-key fingerprint |
-| `AUTHRAIL_STATE_FILE` | File path for local state |
-| `AUTHRAIL_ADAPTER_TOKEN` | Separate secret shared with your local adapter to enable Observe checks |
-| `AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE` | PEM Ed25519 public key for assertions signed by your protected application |
-| `AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` | Optional previous public key while changing the application key |
-| `AUTHRAIL_OPERATOR_TOKEN` | Separate secret for reviewing local recording gaps; at least 32 characters |
+| `AUTHRAIL_CONTROL_PLANE_URL` | AuthRail API address. |
+| `AUTHRAIL_DEPLOYMENT_TOKEN` | Credential for this exact deployment. |
+| `AUTHRAIL_ORGANISATION_ID` | Organisation ID. |
+| `AUTHRAIL_DEPLOYMENT_ID` | Deployment ID. |
+| `AUTHRAIL_TRUSTED_KEY_SHA256` | Trusted signing-key fingerprint obtained through setup, not from a downloaded bundle. |
+| `AUTHRAIL_STATE_FILE` | Private persistent state-file path, unique per instance. |
+| `AUTHRAIL_ADAPTER_TOKEN` | Separate local adapter token for `/evaluate`. |
+| `AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE` | PEM public key of the protected application. |
+| `AUTHRAIL_OPERATOR_TOKEN` | Optional separate token to enable local recording-gap review. |
 
-The short-lived AI system discovery setup key belongs only to the protected
-application's SDK setup request. Never put it in the sidecar environment; it
-cannot replace the deployment credential or authorize an action.
+`AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` accepts the previous application
+public key during a bounded rotation overlap. `AUTHRAIL_HEALTH_ADDR` changes
+the loopback listener from `127.0.0.1:7078`; `AUTHRAIL_SYNC_INTERVAL` changes
+the five-second Rail sync interval. Keep the listener on loopback.
 
-Keep the credential away from the agent and its tools. Keep the state file and
-its adjacent `.observations` retry, `.observation-gaps` review, and `.trajectory`
-session-history files on private storage that survives
-restarts. The containing directory must be private to the sidecar process.
-Give each sidecar instance its own state path; do not share one file between
-processes.
-Obtain the signing-key fingerprint through a
-trusted setup channel; do not take it from the bundle being verified.
+The sidecar checks the signed bundle's organisation, deployment, sequence,
+activation time, expiry, and signature before using it. An invalid private
+state file stops startup rather than resetting rollback protection.
 
-The health endpoint is available at `http://127.0.0.1:7078/health`. Set
-`AUTHRAIL_ADAPTER_TOKEN` to a random value of at least 32 characters to enable
-`POST http://127.0.0.1:7078/evaluate` for an adapter on the same host. Send it
-as a Bearer token, along with a stable `Idempotency-Key` for the action. Keep it
-separate from the deployment credential. The key is checked for a valid shape;
-AuthRail uses it to recognize a retry of the same action. The
-sidecar checks for updated Rails every five seconds. `AUTHRAIL_HEALTH_ADDR`
-and `AUTHRAIL_SYNC_INTERVAL` change those defaults; the listener must stay on
-loopback.
+## Connect your application
 
-Create an Ed25519 key pair for the protected application. Give the sidecar only
-the PEM public key; keep the private key in the application, outside the agent's
-reach. Register that public key on the deployment page in AuthRail before
-sending signed reports, and use the same key in the sidecar. When
-`AUTHRAIL_ADAPTER_TOKEN` enables `/evaluate`, the public key file is
-required. Each check carries a short-lived signature over the organisation and
-deployment IDs, Operation Version, action key, phase, input digest, and the
-principal, session, and resource references. The sidecar rejects missing,
-expired, or changed assertions before checking Rails. Derive those references
-from your application's authenticated session and resource lookup. A signature
-shows which application key asserted them; it does not authenticate the person
-on its own.
-The signed attribution also carries `principalSource` as
-`application_session` or `service_identity`. Set `resourceSource` to
-`application_lookup` with the target ID from the reviewed Operation argument,
-or `not_applicable` with no target when the Operation has no resource identity.
-Missing claims or a target that differs from the argument leave coverage
-unavailable. Such a check is not uploaded as a covered decision.
-The local `/health` response shows `executorKeySha256s`; compare them with the
-fingerprints on the deployment page. This is configuration evidence, not proof
-of interception. To change keys, add the new public key on that page, switch
-the application to its new private key, and set the new public key as
-`AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE`. Keep the old public key as
-`AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` while old reports drain. The old
-key is accepted for at most 24 hours. Check `pendingReports: 0` and
-`blockedReports: 0` on every sidecar before retiring it. If a key is
-compromised, revoke it immediately on the deployment page; queued reports
-signed by that key become recording gaps that require review.
+Use an AuthRail adapter at the protected function boundary. It sends a signed
+`tool_call` before the function and a signed `tool_result` after a successful
+result. Both phases carry the same stable action key. The local endpoint is
+`POST http://127.0.0.1:7078/evaluate`; use the adapter token as its Bearer
+credential. The [Node SDK](https://github.com/AuthRail/authrail-sdk-node) and
+[Go SDK](https://github.com/AuthRail/authrail-sdk-go) handle signing and the
+request format; install one in the protected application, not in the sidecar.
 
-To review those gaps, set `AUTHRAIL_OPERATOR_TOKEN` to a secret that is different
-from the deployment and adapter tokens. Give it only to the operator. The
-loopback endpoint `GET /observations/gaps` lists each blocked action key, phase,
-input digest, and application key fingerprint. It does not expose tool input or
-result. After comparing a gap with your application logs, send its exact action
-key, phase, and input digest with a reason to
-`POST /observations/gaps/acknowledgements`. The sidecar writes the review to its
-private `.observation-gaps` file before freeing queue space. Acknowledging a
-gap does not create an AuthRail Action or certificate, and it cannot turn a
-revoked-key report into verified evidence. `GET /observations/gaps/history`
-shows the latest 100 local acknowledgements. All three endpoints require the
-operator token as a Bearer token. Check every sidecar instance separately.
+The application must authenticate the caller and resolve any target resource
+before signing. A signature proves that its key asserted those references;
+it does not independently prove the person, resource, or business execution.
+The sidecar does not fetch provider facts or invoke a model. It evaluates
+reviewed, bounded context supplied by the protected application.
 
-The local endpoint evaluates calls and results against the
-active signed Rails in Observe mode. It reports what the Rails would decide,
-including missing context and uncovered Operations. For a covered action, the
-sidecar sends the decision and a digest of the checked input to AuthRail. It
-never sends the input or result itself. Your adapter supplies opaque principal,
-session, and optional resource references. The local response says whether the
-report was retained, queued for retry, or unavailable. A retained response has
-the Action and certificate IDs. `/health` shows the number of pending reports.
-Reports rejected after a key closes remain in the private queue with a blocked
-reason and appear in `blockedReports`; they are not silently deleted or certified.
-For earlier-read rules, a signed complete snapshot starts with `start: true`
-and an empty read list on the task's first checked call. Later checks must
-present the exact ordered list of covered reads for that principal and session.
-The sidecar records matching signed read call and successful result hooks under
-the same active Rail bundle in
-its private `.trajectory` file. A missing start, changed replay, mismatched
-history, full ledger, or lost file makes the local decision unavailable; it
-does not create a central Action or certificate. Keep this file with the state
-file for restart and rollback. History is capped at 128 sessions and 256 read
-hooks per session. Never clear the ledger to recover an existing instance.
-AuthRail cannot detect a read that bypasses the adapter; check actual hook
-coverage before relying on a prior-read rule. Session values remain signed
-application claims, not independently verified model output.
-Earlier business effects are not inferred from a tool result or this ledger.
-They require a separate authenticated execution receipt before they can be
-used as prior-effect decision context.
-For AI-assisted Data Rails, the protected application sends only a typed fact
-and bounded extraction provenance from the exact reviewed Context Source.
-The sidecar checks the source and account, model/settings and instructions
-versions, document digest and location, size, time, type, and uncertainty before
-the deterministic Rails use that fact. An uncertain or mismatched reading is
-untrusted, never an allow from the model. The application keeps the document
-and model credentials away from the agent; the sidecar does not call the model
-or independently verify its answer. Covered reports retain provenance but not
-the document or extracted value.
-The queue holds at most 512 reports or 16 MiB and rejects new reports when full.
-Its private review history is also bounded; if it fills or becomes inaccessible,
-the blocked report remains in the queue. Recording failure does not stop the
-customer's action. No published binary or container image is included yet.
+## Check health and recording
 
-For implementation details, see [Architecture](ARCHITECTURE.md). To work on
-the project, see [Contributing](CONTRIBUTING.md).
+`GET http://127.0.0.1:7078/health` shows signed-bundle status, application-key
+fingerprints, and queued or blocked report counts. The sidecar sends a bounded
+deployment signal to AuthRail at startup and every 30 seconds. Fresh health
+does not prove every action was intercepted.
+
+For a covered check, `recordingStatus` distinguishes:
+
+- `retained`: AuthRail saved the report and returned Action/certificate IDs.
+- `queued`: the private sidecar queue saved it for retry; AuthRail has not
+  retained it.
+- `unavailable`: neither retention nor local queue durability is established.
+
+An upload outage leaves a report queued when local storage works. A full or
+unwritable queue leaves a recording gap; it never turns Observe into a block.
+Monitor the customer deployment's health and logs as well as local `/health`.
+
+## Recover recording gaps
+
+During application-key rotation, keep the old public key available only while
+old reports drain. Check `pendingReports: 0` and `blockedReports: 0` on each
+instance before retiring it. A revoked key cannot be used to certify queued
+reports. An operator may inspect blocked metadata through the token-protected
+`/observations/gaps` endpoint and acknowledge an independently reviewed gap
+with a reason. That acknowledgement is local; it does not create an Action or
+certificate. Never clear the queue or trajectory ledger to make health appear
+good.
+
+## Project guides
+
+- [Architecture](ARCHITECTURE.md): trust boundaries, decision protocol, local
+  state, queue, and recovery invariants.
+- [Contributing](CONTRIBUTING.md): build and test conventions.
