@@ -7,7 +7,9 @@ bounded decision records back to AuthRail.
 
 Your application still owns the workflow and the protected function. In
 **Observe** mode, checks show what the Rails would decide; they do not block
-the function or prove it executed.
+the function or prove it executed. In **Enforce**, the protected adapter must
+stop unless a covered call is explicitly allowed and must check the result
+before exposing it. The sidecar returns a decision; only the adapter can apply it.
 
 ## How it fits
 
@@ -23,6 +25,8 @@ boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node)
 or [Go SDK](https://github.com/AuthRail/authrail-sdk-go), or implement the same
 local decision protocol. The sidecar is not a hosted decision endpoint or a
 shared service for unrelated deployments.
+The Node SDK has an Enforce wrapper; the current Go SDK and both SDKs' Observe
+wrappers remain advisory. Review the installed adapter before switching modes.
 
 ## Before you start
 
@@ -104,6 +108,8 @@ For a covered check, `recordingStatus` distinguishes:
 
 An upload outage leaves a report queued when local storage works. A full or
 unwritable queue leaves a recording gap; it never turns Observe into a block.
+The Node Enforce adapter requires `retained` before proceeding, so an outage
+stops its protected path. A result-phase stop cannot undo a tool effect.
 Monitor the customer deployment's health and logs as well as local `/health`.
 
 ## Recover recording gaps

@@ -40,6 +40,10 @@ func decisionRail(id, version, kind string, rules []map[string]any) map[string]a
 }
 
 func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
+	return decisionSynchronizerMode(t, rails, "observe")
+}
+
+func decisionSynchronizerMode(t *testing.T, rails []map[string]any, mode string) *Synchronizer {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -55,7 +59,7 @@ func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
 		"formatVersion": 1, "bundleId": bundleID,
 		"organisationId": organisationID, "deploymentId": deploymentID,
 		"inventoryItemId": itemID, "inventoryRevisionId": revisionID,
-		"sequence": 1, "mode": "observe",
+		"sequence": 1, "mode": mode,
 		"issuedAt":   now.Add(-time.Minute).Format("2006-01-02T15:04:05.000Z"),
 		"activeFrom": now.Add(-time.Minute).Format("2006-01-02T15:04:05.000Z"),
 		"expiresAt":  now.Add(time.Hour).Format("2006-01-02T15:04:05.000Z"),
@@ -75,7 +79,7 @@ func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
 	config.Deployment.DeploymentID = deploymentID
 	config.Deployment.InventoryItemID = itemID
 	config.Deployment.InventoryRevision = revisionID
-	config.Deployment.Mode = "observe"
+	config.Deployment.Mode = mode
 	config.Deployment.Sequence = 1
 	config.Deployment.ActiveBundleID = pointer(bundleID)
 	config.Bundle = &SignedBundle{Payload: base64.RawURLEncoding.EncodeToString(payload),
@@ -213,6 +217,22 @@ func TestObserveCompositionKeepsGuardAndPolicyDistinct(t *testing.T) {
 	noBusinessAuthority, err := guardOnly.Evaluate(call(50))
 	if err != nil || noBusinessAuthority.Outcome != "indeterminate" {
 		t.Fatalf("Guard alone authorized a call: %+v %v", noBusinessAuthority, err)
+	}
+}
+
+func TestEnforceBundleReturnsDecisionWithoutClaimingAdapterAppliedIt(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{policy}, "enforce")
+	allowed, err := syncer.Evaluate(call(50))
+	if err != nil || allowed.Mode != "enforce" || allowed.Outcome != "allow" ||
+		allowed.Enforced || allowed.Coverage != "evaluated" {
+		t.Fatalf("Enforce decision was not bounded: %+v %v", allowed, err)
+	}
+	stopped, err := syncer.Evaluate(call(150))
+	if err != nil || stopped.Mode != "enforce" || stopped.Outcome == "allow" || stopped.Enforced {
+		t.Fatalf("unmatched Enforce call was allowed: %+v %v", stopped, err)
 	}
 }
 

@@ -116,6 +116,60 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 	}
 }
 
+func TestEnforceDecisionReportsBothPhasesWithoutExecutionClaim(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	policy["operationContract"] = map[string]any{"requiredCoverage": []string{"tool_call", "tool_result"}}
+	syncer := decisionSynchronizerMode(t, []map[string]any{policy}, "enforce")
+	var phases []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Report struct {
+				Phase      string     `json:"phase"`
+				Evaluation Evaluation `json:"evaluation"`
+			} `json:"report"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		phases = append(phases, body.Report.Phase)
+		if body.Report.Evaluation.Mode != "enforce" || body.Report.Evaluation.Enforced ||
+			body.Report.Evaluation.Outcome != "allow" {
+			t.Errorf("Enforce report overstated the local decision: %+v", body.Report.Evaluation)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"actionId":"00000000-0000-4000-8000-000000000020","certificateId":"00000000-0000-4000-8000-000000000021","replayed":false}`))
+	}))
+	defer server.Close()
+	syncer.options.ControlPlaneURL = server.URL
+	syncer.options.Token = "deployment-secret"
+	syncer.options.Client = server.Client()
+	for _, phase := range []string{"tool_call", "tool_result"} {
+		requestValue := call(50)
+		requestValue.Phase = phase
+		if phase == "tool_result" {
+			requestValue.Result = json.RawMessage(`{"status":"ok"}`)
+		}
+		requestValue = signedCall(t, syncer, requestValue, "invoice-123")
+		encoded, _ := json.Marshal(requestValue)
+		request := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(encoded))
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
+		request.Header.Set("Idempotency-Key", "invoice-123")
+		response := httptest.NewRecorder()
+		EvaluationHandler(syncer, strings.Repeat("a", 32)).ServeHTTP(response, request)
+		var decision Evaluation
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &decision) != nil ||
+			decision.Mode != "enforce" || decision.Enforced || decision.RecordingStatus != "retained" ||
+			decision.ReportReplayed == nil || *decision.ReportReplayed {
+			t.Fatalf("local Enforce decision failed: %d %+v", response.Code, decision)
+		}
+	}
+	if len(phases) != 2 || phases[0] != "tool_call" || phases[1] != "tool_result" {
+		t.Fatalf("missing Enforce report phase: %v", phases)
+	}
+}
+
 func TestObserveReportRetainsReviewedExtractionWithoutDocumentOrModelOutput(t *testing.T) {
 	sourceVersionID := "00000000-0000-4000-8000-000000000130"
 	dataVersionID := "00000000-0000-4000-8000-000000000131"

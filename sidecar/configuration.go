@@ -75,7 +75,7 @@ func verifyConfiguration(value Configuration, organisationID, deploymentID strin
 	if !uuidPattern.MatchString(d.OrganisationID) || !uuidPattern.MatchString(d.DeploymentID) ||
 		!uuidPattern.MatchString(d.InventoryItemID) || !uuidPattern.MatchString(d.InventoryRevision) ||
 		d.OrganisationID != organisationID || d.DeploymentID != deploymentID ||
-		d.Mode != "observe" || d.Sequence < 0 {
+		(d.Mode != "observe" && d.Mode != "enforce") || d.Sequence < 0 {
 		return nil, errors.New("configuration audience or mode is invalid")
 	}
 	if d.ActiveBundleID == nil {

@@ -44,6 +44,7 @@ type Evaluation struct {
 	Unresolved      []UnresolvedField `json:"unresolved"`
 	Facts           []FactSummary     `json:"facts,omitempty"`
 	RecordingStatus string            `json:"recordingStatus,omitempty"`
+	ReportReplayed  *bool             `json:"reportReplayed,omitempty"`
 	ActionID        string            `json:"actionId,omitempty"`
 	CertificateID   string            `json:"certificateId,omitempty"`
 	readResult      bool              `json:"-"`
@@ -169,6 +170,7 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 	if err != nil || manifest == nil || manifest.Sequence < floor {
 		return response, nil
 	}
+	response.Mode = manifest.Mode
 	response.BundleID = &manifest.BundleID
 	response.Sequence = manifest.Sequence
 	response.Coverage = "uncovered"

@@ -23,8 +23,9 @@ AuthRail ── signed deployment bundle ──▶ sidecar ◀── signed call
 The application key proves that the application asserted principal, session,
 resource, and context references. It does **not** independently prove the
 person, resource, provider read, execution, or that every action passed through
-the adapter. A bypass path remains advisory. Observe responses always report
-`enforced: false`; neither sidecar health nor a decision is execution proof.
+the adapter. A bypass path remains advisory. Predecision responses in both
+modes report `enforced: false` because the sidecar cannot verify that the
+adapter applied them. Neither sidecar health nor a decision is execution proof.
 
 ## Bundle synchronization
 
@@ -36,7 +37,7 @@ replace a newer one after restart.
 
 The latest accepted sequence lives in a private state file. An invalid file
 stops startup rather than resetting rollback protection. If AuthRail becomes
-unreachable, a previously verified Observe bundle may remain usable only
+unreachable, a previously verified bundle may remain usable only
 until its expiry. A missing or invalid bundle makes coverage unavailable,
 not allowed.
 
@@ -96,8 +97,10 @@ For a covered call or result, the sidecar sends the outcome, exact bundle and
 rule references, fact status and bounded provenance, canonical input digest,
 and signed application assertion to AuthRail. It never uploads raw tool
 arguments, results, fact values, or lookup keys. The server verifies the
-registered application key and retains an idempotent Action and an Observe
-certificate marked as deployment-reported, not enforced or execution-verified.
+registered application key and retains an idempotent Action and a certificate
+marked as deployment-reported, not independently verified as enforced or
+executed. The Node Enforce adapter requires retained call and result
+reports before proceeding at each phase.
 
 Before upload, the sidecar writes metadata to a private queue beside its
 state file. It retries after restart and while running. The queue holds at

@@ -83,6 +83,7 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			evaluation.RecordingStatus = status
 			evaluation.ActionID = retained.ActionID
 			evaluation.CertificateID = retained.CertificateID
+			evaluation.ReportReplayed = &retained.Replayed
 		} else {
 			evaluation.RecordingStatus = status
 		}

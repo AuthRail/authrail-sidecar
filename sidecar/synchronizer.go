@@ -263,6 +263,7 @@ func (s *Synchronizer) Snapshot() Snapshot {
 	if s.state.Current == nil || s.state.Current.Bundle == nil {
 		return result
 	}
+	result.Mode = s.state.Current.Deployment.Mode
 	result.ActiveBundleID = s.state.Current.Deployment.ActiveBundleID
 	manifest, err := verifyConfiguration(*s.state.Current,
 		s.options.OrganisationID, s.options.DeploymentID,
