@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -625,5 +626,83 @@ func TestObserveApprovalAndResultCoverage(t *testing.T) {
 	result.Result = nil
 	if _, err := syncer.Evaluate(result); err == nil {
 		t.Fatal("result hook accepted no result")
+	}
+}
+
+func TestContextualExtractionCannotReturnAnUnreviewedDecision(t *testing.T) {
+	sourceVersionID := "00000000-0000-4000-8000-000000000130"
+	dataVersionID := "00000000-0000-4000-8000-000000000131"
+	data := decisionRail("00000000-0000-4000-8000-000000000132", dataVersionID, "data", nil)
+	data["sourceContextVersionId"] = sourceVersionID
+	data["sourceContextContract"] = map[string]any{
+		"formatVersion": 5, "kind": "extraction", "sourceIdentity": "support.messages",
+		"accountBoundary": "tenant_123", "lookup": "message.read",
+		"queryField": map[string]any{"root": "arguments", "path": []string{"messageId"}},
+		"factKey":    "sensitive", "resultPath": []string{"sensitive"}, "valueType": "boolean",
+		"modelId": "model.v1", "modelConfigSha256": strings.Repeat("a", 64),
+		"promptVersion": "prompt.v1", "maxInputBytes": 4096, "maxOutputBytes": 256,
+		"maxAgeSeconds": 60, "timeoutMs": 2000, "failure": "unavailable"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000133",
+		"00000000-0000-4000-8000-000000000134", "policy", []map[string]any{{
+			"id": "ordinary", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"sensitive"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": false}},
+			"outcome": "allow"}})
+	policy["content"].(map[string]any)["factBindings"] = []map[string]any{{
+		"factKey": "sensitive", "dataRailVersionId": dataVersionID}}
+	syncer := decisionSynchronizer(t, []map[string]any{data, policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"messageId":"msg_123"}`)
+	request.FactResolutions = []FactResolution{{SourceVersionID: sourceVersionID,
+		SourceIdentity: "support.messages", AccountBoundary: "tenant_123",
+		Lookup: "message.read", LookupKey: "msg_123", AuthenticatedExecutor: true,
+		Status: "ok", ObservedAt: syncer.options.Now().Add(-20 * time.Second).Format(time.RFC3339Nano),
+		Value: map[string]any{"sensitive": false}, Extraction: &ExtractionProvenance{
+			SourceSHA256: strings.Repeat("b", 64), SourceBytes: 120,
+			SourceLocation: "message:msg_123", ModelID: "model.v1",
+			ModelConfigSHA256: strings.Repeat("a", 64), PromptVersion: "prompt.v1",
+			ExtractedAt: syncer.options.Now().Add(-10 * time.Second).Format(time.RFC3339Nano)}}}
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" || allowed.Facts[0].Status != "trusted" ||
+		allowed.Facts[0].Extraction == nil ||
+		allowed.Facts[0].Extraction.SourceLocation != "message:msg_123" {
+		t.Fatalf("reviewed assertion not evaluated: %+v %v", allowed, err)
+	}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	changed := signed
+	changed.FactResolutions = append([]FactResolution(nil), signed.FactResolutions...)
+	provenance := *signed.FactResolutions[0].Extraction
+	changed.FactResolutions[0].Extraction = &provenance
+	changed.FactResolutions[0].Extraction.SourceLocation = "message:changed"
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed extraction location passed the signature")
+	}
+	request.FactResolutions[0].Status = "uncertain"
+	uncertain, err := syncer.Evaluate(request)
+	if err != nil || uncertain.Outcome != "additional_context_required" ||
+		uncertain.Facts[0].Uncertainty != "uncertain" {
+		t.Fatalf("uncertain assertion authorized: %+v %v", uncertain, err)
+	}
+	request.FactResolutions[0].Status = "ok"
+	request.FactResolutions[0].Extraction.ModelID = "different"
+	untrusted, err := syncer.Evaluate(request)
+	if err != nil || untrusted.Outcome != "additional_context_required" {
+		t.Fatalf("changed model authorized: %+v %v", untrusted, err)
+	}
+	request.FactResolutions[0].Extraction.ModelID = "model.v1"
+	request.FactResolutions[0].ObservedAt = syncer.options.Now().Add(-2 * time.Minute).Format(time.RFC3339Nano)
+	stale, err := syncer.Evaluate(request)
+	if err != nil || stale.Outcome != "additional_context_required" || stale.Facts[0].Status != "stale" {
+		t.Fatalf("stale reading authorized: %+v %v", stale, err)
+	}
+	request.FactResolutions[0].ObservedAt = syncer.options.Now().Add(-20 * time.Second).Format(time.RFC3339Nano)
+	request.FactResolutions[0].Value["sensitive"] = "false"
+	wrongType, err := syncer.Evaluate(request)
+	if err != nil || wrongType.Outcome != "additional_context_required" ||
+		wrongType.Facts[0].Status != "untrusted" {
+		t.Fatalf("wrongly typed reading authorized: %+v %v", wrongType, err)
 	}
 }

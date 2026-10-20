@@ -121,6 +121,15 @@ hooks per session. Never clear the ledger to recover an existing instance.
 AuthRail cannot detect a read that bypasses the adapter; check actual hook
 coverage before relying on a prior-read rule. Session values remain signed
 application claims, not independently verified model output.
+For AI-assisted Data Rails, the protected application sends only a typed fact
+and bounded extraction provenance from the exact reviewed Context Source.
+The sidecar checks the source and account, model/settings and instructions
+versions, document digest and location, size, time, type, and uncertainty before
+the deterministic Rails use that fact. An uncertain or mismatched reading is
+untrusted, never an allow from the model. The application keeps the document
+and model credentials away from the agent; the sidecar does not call the model
+or independently verify its answer. Covered reports retain provenance but not
+the document or extracted value.
 The queue holds at most 512 reports or 16 MiB and rejects new reports when full.
 Its private review history is also bounded; if it fills or becomes inaccessible,
 the blocked report remains in the queue. Recording failure does not stop the

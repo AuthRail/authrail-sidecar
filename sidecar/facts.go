@@ -12,18 +12,31 @@ import (
 
 var invoiceKeyPattern = regexp.MustCompile(`^in_[A-Za-z0-9]{4,100}$`)
 var quickBooksKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
+var extractionDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var extractionLocationPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$`)
 
 type FactResolution struct {
-	SourceVersionID       string         `json:"sourceVersionId"`
-	ProviderAccountID     string         `json:"providerAccountId,omitempty"`
-	SourceIdentity        string         `json:"sourceIdentity,omitempty"`
-	AccountBoundary       string         `json:"accountBoundary,omitempty"`
-	Lookup                string         `json:"lookup"`
-	LookupKey             string         `json:"lookupKey"`
-	AuthenticatedExecutor bool           `json:"authenticatedExecutor"`
-	Status                string         `json:"status"`
-	ObservedAt            string         `json:"observedAt,omitempty"`
-	Value                 map[string]any `json:"value,omitempty"`
+	SourceVersionID       string                `json:"sourceVersionId"`
+	ProviderAccountID     string                `json:"providerAccountId,omitempty"`
+	SourceIdentity        string                `json:"sourceIdentity,omitempty"`
+	AccountBoundary       string                `json:"accountBoundary,omitempty"`
+	Lookup                string                `json:"lookup"`
+	LookupKey             string                `json:"lookupKey"`
+	AuthenticatedExecutor bool                  `json:"authenticatedExecutor"`
+	Status                string                `json:"status"`
+	ObservedAt            string                `json:"observedAt,omitempty"`
+	Value                 map[string]any        `json:"value,omitempty"`
+	Extraction            *ExtractionProvenance `json:"extraction,omitempty"`
+}
+
+type ExtractionProvenance struct {
+	SourceSHA256      string `json:"sourceSha256"`
+	SourceBytes       int    `json:"sourceBytes"`
+	SourceLocation    string `json:"sourceLocation"`
+	ModelID           string `json:"modelId"`
+	ModelConfigSHA256 string `json:"modelConfigSha256"`
+	PromptVersion     string `json:"promptVersion"`
+	ExtractedAt       string `json:"extractedAt"`
 }
 
 type factContract struct {
@@ -42,19 +55,26 @@ type factContract struct {
 	MaxAgeSeconds     int      `json:"maxAgeSeconds"`
 	TimeoutMs         int      `json:"timeoutMs"`
 	Failure           string   `json:"failure"`
+	ModelID           string   `json:"modelId"`
+	ModelConfigSHA256 string   `json:"modelConfigSha256"`
+	PromptVersion     string   `json:"promptVersion"`
+	MaxInputBytes     int      `json:"maxInputBytes"`
+	MaxOutputBytes    int      `json:"maxOutputBytes"`
 }
 
 type FactSummary struct {
-	SourceVersionID   string  `json:"sourceVersionId"`
-	FactKey           string  `json:"factKey"`
-	ProviderAccountID string  `json:"providerAccountId,omitempty"`
-	SourceIdentity    string  `json:"sourceIdentity,omitempty"`
-	AccountBoundary   string  `json:"accountBoundary,omitempty"`
-	Lookup            string  `json:"lookup"`
-	LookupKeySHA256   string  `json:"lookupKeySha256,omitempty"`
-	Status            string  `json:"status"`
-	ObservedAt        string  `json:"observedAt,omitempty"`
-	AgeSeconds        float64 `json:"ageSeconds,omitempty"`
+	SourceVersionID   string                `json:"sourceVersionId"`
+	FactKey           string                `json:"factKey"`
+	ProviderAccountID string                `json:"providerAccountId,omitempty"`
+	SourceIdentity    string                `json:"sourceIdentity,omitempty"`
+	AccountBoundary   string                `json:"accountBoundary,omitempty"`
+	Lookup            string                `json:"lookup"`
+	LookupKeySHA256   string                `json:"lookupKeySha256,omitempty"`
+	Status            string                `json:"status"`
+	Uncertainty       string                `json:"uncertainty,omitempty"`
+	Extraction        *ExtractionProvenance `json:"extraction,omitempty"`
+	ObservedAt        string                `json:"observedAt,omitempty"`
+	AgeSeconds        float64               `json:"ageSeconds,omitempty"`
 }
 
 type resolvedFact struct {
@@ -106,12 +126,34 @@ func resolveDataFact(rail railBinding, args map[string]any, resolutions []FactRe
 		match.SourceIdentity != contract.SourceIdentity ||
 		match.AccountBoundary != contract.AccountBoundary ||
 		((contract.FormatVersion == 1 || contract.FormatVersion == 3) && contract.ProviderAccountID == "") ||
-		(contract.FormatVersion == 4 && (contract.SourceIdentity == "" || contract.AccountBoundary == "")) ||
-		(contract.FormatVersion != 1 && contract.FormatVersion != 3 && contract.FormatVersion != 4) {
+		((contract.FormatVersion == 4 || contract.FormatVersion == 5) &&
+			(contract.SourceIdentity == "" || contract.AccountBoundary == "")) ||
+		(contract.FormatVersion != 1 && contract.FormatVersion != 3 &&
+			contract.FormatVersion != 4 && contract.FormatVersion != 5) {
 		output.status, output.summary.Status = "untrusted", "untrusted"
 		return output
 	}
 	if match.Status == "unavailable" {
+		return output
+	}
+	if contract.FormatVersion == 5 {
+		if !validExtractionProvenance(contract, match.Extraction, match.ObservedAt, now) {
+			output.status, output.summary.Status = "untrusted", "untrusted"
+			return output
+		}
+		provenance := *match.Extraction
+		output.summary.Extraction = &provenance
+		if match.Status == "uncertain" {
+			output.status, output.summary.Status = "untrusted", "untrusted"
+			output.summary.Uncertainty = "uncertain"
+			return output
+		}
+		if match.Value == nil || !boundedExtractionValue(match.Value, contract.MaxOutputBytes) {
+			output.status, output.summary.Status = "untrusted", "untrusted"
+			return output
+		}
+	} else if match.Extraction != nil {
+		output.status, output.summary.Status = "untrusted", "untrusted"
 		return output
 	}
 	if match.Status != "ok" || match.Value == nil || match.ObservedAt == "" {
@@ -134,7 +176,7 @@ func resolveDataFact(rail railBinding, args map[string]any, resolutions []FactRe
 			output.status, output.summary.Status = "untrusted", "untrusted"
 			return output
 		}
-	case 4:
+	case 4, 5:
 		value, _ = resolve(field{Root: "arguments", Path: contract.ResultPath}, match.Value, nil)
 		if !validFactValue(value, contract.ValueType) {
 			output.status, output.summary.Status = "untrusted", "untrusted"
@@ -162,6 +204,31 @@ func resolveDataFact(rail railBinding, args map[string]any, resolutions []FactRe
 	output.value = value
 	output.status, output.summary.Status = "trusted", "trusted"
 	return output
+}
+
+func validExtractionProvenance(contract factContract, provenance *ExtractionProvenance,
+	observedAt string, now time.Time) bool {
+	if provenance == nil || !extractionDigestPattern.MatchString(provenance.SourceSHA256) ||
+		provenance.SourceBytes < 1 || provenance.SourceBytes > contract.MaxInputBytes ||
+		!extractionLocationPattern.MatchString(provenance.SourceLocation) ||
+		provenance.ModelID != contract.ModelID ||
+		provenance.ModelConfigSHA256 != contract.ModelConfigSHA256 ||
+		provenance.PromptVersion != contract.PromptVersion ||
+		contract.MaxInputBytes < 1 || contract.MaxInputBytes > 65536 ||
+		contract.MaxOutputBytes < 1 || contract.MaxOutputBytes > 4096 {
+		return false
+	}
+	extractedAt, err := time.Parse(time.RFC3339Nano, provenance.ExtractedAt)
+	if err != nil || extractedAt.After(now.Add(5*time.Second)) {
+		return false
+	}
+	sourceAt, err := time.Parse(time.RFC3339Nano, observedAt)
+	return err == nil && !extractedAt.Before(sourceAt)
+}
+
+func boundedExtractionValue(value map[string]any, maximum int) bool {
+	encoded, err := json.Marshal(value)
+	return err == nil && len(encoded) <= maximum
 }
 
 func validFactValue(value any, kind string) bool {
