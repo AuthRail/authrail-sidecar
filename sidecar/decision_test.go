@@ -393,6 +393,7 @@ func TestPriorReadRequiresExactSignedSessionHistory(t *testing.T) {
 	}
 	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
 		Complete: true, PriorReadOperationVersionIDs: []string{readVersionID}}
+	request.Trajectory.verified = true
 	denied, err := syncer.Evaluate(request)
 	if err != nil || denied.Outcome != "deny" || len(denied.MatchedRuleIDs) != 2 {
 		t.Fatalf("exact prior read did not dominate allow: %+v %v", denied, err)
@@ -403,6 +404,7 @@ func TestPriorReadRequiresExactSignedSessionHistory(t *testing.T) {
 	}
 	signed.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
 		Complete: true, PriorReadOperationVersionIDs: []string{}}
+	signed.Trajectory.verified = true
 	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
 		t.Fatal("changed session history passed the signature")
 	}
@@ -462,6 +464,7 @@ func TestReviewedTrajectoryFieldParticipatesInGuardDecision(t *testing.T) {
 	}
 	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
 		Complete: true, Values: map[string]any{"sensitiveDataSeen": true}}
+	request.Trajectory.verified = true
 	denied, err := syncer.Evaluate(request)
 	if err != nil || denied.Outcome != "deny" {
 		t.Fatalf("reviewed sensitive history did not deny: %+v %v", denied, err)

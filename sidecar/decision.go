@@ -46,6 +46,8 @@ type Evaluation struct {
 	RecordingStatus string            `json:"recordingStatus,omitempty"`
 	ActionID        string            `json:"actionId,omitempty"`
 	CertificateID   string            `json:"certificateId,omitempty"`
+	readResult      bool              `json:"-"`
+	readCall        bool              `json:"-"`
 }
 
 type UnresolvedField struct {
@@ -212,6 +214,10 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 			}
 		}
 	}
+	if response.Coverage == "evaluated" && coveredReads[request.OperationVersionID] {
+		response.readCall = request.Phase == "tool_call"
+		response.readResult = request.Phase == "tool_result"
+	}
 	resolved := make(map[string]resolvedFact)
 	for _, rail := range selected {
 		if request.Trajectory != nil && !reviewedTrajectoryValues(request.Trajectory.Values, rail.OperationContract.AvailableFields) {
@@ -331,7 +337,7 @@ func evaluateRules(rail railBinding, phase string, args, result map[string]any,
 				missing = true
 				output.unresolved = append(output.unresolved, UnresolvedField{Root: "trajectory",
 					Path: []string{"priorReadOperationVersionIds"}, Reason: "unavailable"})
-			} else if trajectory == nil || !trajectory.Complete {
+			} else if trajectory == nil || !trajectory.Complete || !trajectory.verified {
 				missing = true
 				output.unresolved = append(output.unresolved, UnresolvedField{Root: "trajectory",
 					Path: []string{"priorReadOperationVersionIds"}, Reason: "missing"})
@@ -542,13 +548,13 @@ func resolve(f field, args, result map[string]any) (any, []UnresolvedField) {
 func resolveIdentity(f field, args, result map[string]any, attribution Attribution,
 	facts map[string]resolvedFact, trajectory *TrajectorySnapshot) (any, []UnresolvedField) {
 	if f.Root == "trajectory" && len(f.Path) == 1 && f.Path[0] == "priorReadOperationVersionIds" {
-		if trajectory == nil || !trajectory.Complete {
+		if trajectory == nil || !trajectory.Complete || !trajectory.verified {
 			return nil, []UnresolvedField{{Root: f.Root, Path: f.Path, Reason: "missing"}}
 		}
 		return trajectory.PriorReadOperationVersionIDs, nil
 	}
 	if f.Root == "trajectory" {
-		if trajectory == nil || !trajectory.Complete {
+		if trajectory == nil || !trajectory.Complete || !trajectory.verified {
 			return nil, []UnresolvedField{{Root: f.Root, Path: f.Path, Reason: "missing"}}
 		}
 		value, unresolved := resolve(field{Root: "arguments", Path: f.Path}, trajectory.Values, nil)

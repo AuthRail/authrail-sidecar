@@ -38,7 +38,8 @@ application's SDK setup request. Never put it in the sidecar environment; it
 cannot replace the deployment credential or authorize an action.
 
 Keep the credential away from the agent and its tools. Keep the state file and
-its adjacent `.observations` retry and `.observation-gaps` review files on private storage that survives
+its adjacent `.observations` retry, `.observation-gaps` review, and `.trajectory`
+session-history files on private storage that survives
 restarts. The containing directory must be private to the sidecar process.
 Give each sidecar instance its own state path; do not share one file between
 processes.
@@ -107,6 +108,19 @@ report was retained, queued for retry, or unavailable. A retained response has
 the Action and certificate IDs. `/health` shows the number of pending reports.
 Reports rejected after a key closes remain in the private queue with a blocked
 reason and appear in `blockedReports`; they are not silently deleted or certified.
+For earlier-read rules, a signed complete snapshot starts with `start: true`
+and an empty read list on the task's first checked call. Later checks must
+present the exact ordered list of covered reads for that principal and session.
+The sidecar records matching signed read call and successful result hooks under
+the same active Rail bundle in
+its private `.trajectory` file. A missing start, changed replay, mismatched
+history, full ledger, or lost file makes the local decision unavailable; it
+does not create a central Action or certificate. Keep this file with the state
+file for restart and rollback. History is capped at 128 sessions and 256 read
+hooks per session. Never clear the ledger to recover an existing instance.
+AuthRail cannot detect a read that bypasses the adapter; check actual hook
+coverage before relying on a prior-read rule. Session values remain signed
+application claims, not independently verified model output.
 The queue holds at most 512 reports or 16 MiB and rejects new reports when full.
 Its private review history is also bounded; if it fills or becomes inaccessible,
 the blocked report remains in the queue. Recording failure does not stop the

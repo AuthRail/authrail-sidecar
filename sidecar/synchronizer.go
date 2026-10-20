@@ -48,11 +48,12 @@ type Snapshot struct {
 }
 
 type diskState struct {
-	FormatVersion  int            `json:"formatVersion"`
-	OrganisationID string         `json:"organisationId"`
-	DeploymentID   string         `json:"deploymentId"`
-	Floor          int64          `json:"floor"`
-	Current        *Configuration `json:"current"`
+	FormatVersion           int            `json:"formatVersion"`
+	OrganisationID          string         `json:"organisationId"`
+	DeploymentID            string         `json:"deploymentId"`
+	Floor                   int64          `json:"floor"`
+	Current                 *Configuration `json:"current"`
+	TrajectoryLedgerStarted bool           `json:"trajectoryLedgerStarted,omitempty"`
 }
 
 type Synchronizer struct {
@@ -65,6 +66,9 @@ type Synchronizer struct {
 	observeMu          sync.Mutex
 	observeQueue       observeQueueState
 	observeQueueLoaded bool
+	trajectoryMu       sync.Mutex
+	trajectoryState    trajectoryLedger
+	trajectoryLoaded   bool
 }
 
 func NewSynchronizer(options Options) (*Synchronizer, error) {
@@ -216,7 +220,8 @@ func (s *Synchronizer) Sync(ctx context.Context) error {
 		}
 		next := diskState{FormatVersion: 1,
 			OrganisationID: s.options.OrganisationID, DeploymentID: s.options.DeploymentID,
-			Floor: configuration.Deployment.Sequence, Current: &configuration}
+			Floor: configuration.Deployment.Sequence, Current: &configuration,
+			TrajectoryLedgerStarted: s.state.TrajectoryLedgerStarted}
 		if err := saveState(s.options.StateFile, next); err != nil {
 			s.status = "storage_error"
 			return err

@@ -59,11 +59,25 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		syncer.trajectoryMu.Lock()
+		if err := syncer.verifyTrajectoryLocked(&request, r.Header.Get("Idempotency-Key")); err != nil {
+			syncer.trajectoryMu.Unlock()
+			writeTrajectoryUnavailable(w, request.RequestID)
+			return
+		}
 		evaluation, err := syncer.Evaluate(request)
 		if err != nil {
+			syncer.trajectoryMu.Unlock()
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if err := syncer.recordTrajectoryResultLocked(request, r.Header.Get("Idempotency-Key"), evaluation); err != nil {
+			_ = syncer.markTrajectoryGapLocked(request)
+			syncer.trajectoryMu.Unlock()
+			writeTrajectoryUnavailable(w, request.RequestID)
+			return
+		}
+		syncer.trajectoryMu.Unlock()
 		if retained, status := syncer.retainObserve(r.Context(),
 			r.Header.Get("Idempotency-Key"), request, evaluation); status == "retained" {
 			evaluation.RecordingStatus = status
@@ -75,4 +89,14 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(evaluation)
 	})
+}
+
+func writeTrajectoryUnavailable(w http.ResponseWriter, requestID string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(Evaluation{RequestID: requestID, Mode: "observe",
+		Enforced: false, Coverage: "unavailable", Outcome: "additional_context_required",
+		ReasonCodes: []string{"trajectory_unverified"},
+		Unresolved: []UnresolvedField{{Root: "trajectory",
+			Path: []string{"priorReadOperationVersionIds"}, Reason: "unavailable"}},
+		RecordingStatus: "unavailable"})
 }

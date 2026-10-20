@@ -10,9 +10,11 @@ var trajectoryFieldPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,79}$`)
 
 type TrajectorySnapshot struct {
 	SessionID                    string         `json:"sessionId"`
+	Start                        bool           `json:"start,omitempty"`
 	Complete                     bool           `json:"complete"`
 	PriorReadOperationVersionIDs []string       `json:"priorReadOperationVersionIds"`
 	Values                       map[string]any `json:"values,omitempty"`
+	verified                     bool           `json:"-"`
 }
 
 func validTrajectory(snapshot *TrajectorySnapshot, sessionID string) bool {
