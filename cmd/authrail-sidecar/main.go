@@ -67,6 +67,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	telemetry, err := sidecar.NewTelemetry(context.Background(), os.Getenv("AUTHRAIL_OTLP_ENDPOINT"))
+	if err != nil {
+		log.Print("sidecar telemetry export unavailable; continuing without export")
+		telemetry, _ = sidecar.NewTelemetry(context.Background(), "")
+	}
 	address := os.Getenv("AUTHRAIL_HEALTH_ADDR")
 	if address == "" {
 		address = "127.0.0.1:7078"
@@ -84,14 +89,18 @@ func main() {
 	mux.HandleFunc("GET /health", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		writer.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(writer).Encode(synchronizer.Snapshot())
+		_ = json.NewEncoder(writer).Encode(struct {
+			sidecar.Snapshot
+			TelemetryFailures uint64 `json:"telemetryFailures"`
+		}{synchronizer.Snapshot(), telemetry.Failures()})
 	})
 	if adapterToken != "" {
-		mux.Handle("POST /evaluate", sidecar.EvaluationHandler(synchronizer, adapterToken))
+		mux.Handle("POST /evaluate", telemetry.WrapHTTP("evaluate",
+			sidecar.EvaluationHandler(synchronizer, adapterToken, telemetry)))
 		mux.Handle("POST /approval-permits/claim",
-			sidecar.ApprovalPermitHandler(synchronizer, adapterToken))
+			telemetry.WrapHTTP("approval_claim", sidecar.ApprovalPermitHandler(synchronizer, adapterToken)))
 		mux.Handle("POST /execution-receipts",
-			sidecar.ExecutionReceiptHandler(synchronizer, adapterToken))
+			telemetry.WrapHTTP("execution_receipt", sidecar.ExecutionReceiptHandler(synchronizer, adapterToken)))
 	}
 	if operatorToken != "" {
 		handler := sidecar.OperatorGapHandler(synchronizer, operatorToken)
@@ -109,14 +118,14 @@ func main() {
 		}
 	}()
 	log.Print("AuthRail sidecar configuration sync started")
-	if err := synchronizer.Sync(ctx); err != nil && ctx.Err() == nil {
+	if err := telemetry.Run(ctx, "sync", synchronizer.Sync); err != nil && ctx.Err() == nil {
 		log.Print("initial configuration sync: ", safeError(err))
 	}
 	go func() {
 		retryTicker := time.NewTicker(15 * time.Second)
 		defer retryTicker.Stop()
 		for {
-			if err := synchronizer.RetryObservations(ctx); err != nil && ctx.Err() == nil {
+			if err := telemetry.Run(ctx, "retry_reports", synchronizer.RetryObservations); err != nil && ctx.Err() == nil {
 				log.Print("Observe reports remain queued")
 			}
 			select {
@@ -131,7 +140,7 @@ func main() {
 		// Health delivery is independent of decision and report processing.
 		defer signalTicker.Stop()
 		for {
-			if err := synchronizer.ReportSignal(ctx); err != nil && ctx.Err() == nil {
+			if err := telemetry.Run(ctx, "health_signal", synchronizer.ReportSignal); err != nil && ctx.Err() == nil {
 				log.Print("sidecar signal could not be delivered")
 			}
 			select {
@@ -148,10 +157,11 @@ func main() {
 		case <-ctx.Done():
 			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = server.Shutdown(shutdown)
+			_ = telemetry.Shutdown(shutdown)
 			cancel()
 			return
 		case <-ticker.C:
-			if err := synchronizer.Sync(ctx); err != nil && ctx.Err() == nil {
+			if err := telemetry.Run(ctx, "sync", synchronizer.Sync); err != nil && ctx.Err() == nil {
 				log.Print("configuration sync: ", safeError(err))
 			}
 		}

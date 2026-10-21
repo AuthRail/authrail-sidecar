@@ -50,6 +50,12 @@ not allowed.
 `/health` exposes configuration and queue status without exposing the bundle
 or deployment credential. A bounded authenticated health signal also reaches
 AuthRail. Neither signal establishes that every tool was intercepted.
+When configured, the sidecar exports redacted OTLP/HTTP traces and metrics to
+a customer-operated OpenTelemetry Collector. Export uses a bounded memory
+queue and short deadline; a missing or failing Collector never changes a
+decision, receipt, or report. `/health` includes a process-local cumulative
+`telemetryFailures` count for dropped spans and failed exports. That count is
+not evidence of central ingestion or interception coverage.
 
 ## Local check
 

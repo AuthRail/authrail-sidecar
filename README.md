@@ -79,6 +79,7 @@ Configure the process before starting it:
 | `AUTHRAIL_ADAPTER_TOKEN` | Separate local adapter token for `/evaluate`. |
 | `AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE` | PEM public key of the protected application. |
 | `AUTHRAIL_OPERATOR_TOKEN` | Optional separate token to enable local recording-gap review. |
+| `AUTHRAIL_OTLP_ENDPOINT` | Optional OTLP/HTTP Collector base URL, for example `http://127.0.0.1:4318`. Use HTTPS for a remote Collector; omit it to disable export. |
 
 `AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` accepts the previous application
 public key during a bounded rotation overlap. `AUTHRAIL_HEALTH_ADDR` changes
@@ -123,8 +124,13 @@ reviewed, bounded context supplied by the protected application.
 ## Check health and recording
 
 `GET http://127.0.0.1:7078/health` shows signed-bundle status, application-key
-fingerprints, and queued or blocked report counts. The sidecar sends a bounded
-deployment signal to AuthRail at startup and every 30 seconds. Fresh health
+fingerprints, queued or blocked report counts, and a process-local cumulative
+`telemetryFailures` count. That count includes dropped spans and failed OTLP
+exports; it does not prove Collector retention or adapter coverage. OTLP export
+uses bounded memory and a short deadline and cannot change a decision. An
+invalid exporter configuration disables export without stopping decisions.
+The sidecar sends a bounded deployment signal to AuthRail at startup and every
+30 seconds. Fresh health
 does not prove every action was intercepted.
 
 For a covered check, `recordingStatus` distinguishes:

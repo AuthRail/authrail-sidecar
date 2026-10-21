@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type Options struct {
@@ -152,6 +154,7 @@ func (s *Synchronizer) Sync(ctx context.Context) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+s.options.Token)
 	req.Header.Set("Accept", "application/json")
+	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 	res, err := s.options.Client.Do(req)
 	if err != nil {
 		s.setStatus("unreachable")

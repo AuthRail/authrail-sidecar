@@ -14,7 +14,7 @@ var identityRefPattern = actionKeyPattern
 
 // EvaluationHandler accepts only requests from the protected local adapter.
 // The deployment credential is never accepted on this listener.
-func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
+func EvaluationHandler(syncer *Synchronizer, adapterToken string, telemetry ...*Telemetry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost {
@@ -92,6 +92,9 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			evaluation.ReportReplayed = &retained.Replayed
 		} else {
 			evaluation.RecordingStatus = status
+		}
+		if len(telemetry) > 0 && telemetry[0] != nil {
+			telemetry[0].RecordDecision(r.Context(), evaluation)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(evaluation)

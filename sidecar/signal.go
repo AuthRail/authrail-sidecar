@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // ReportSignal sends bounded sidecar state; it does not report tool coverage.
@@ -36,6 +38,7 @@ func (s *Synchronizer) ReportSignal(ctx context.Context) error {
 	}
 	request.Header.Set("Authorization", "Bearer "+s.options.Token)
 	request.Header.Set("Content-Type", "application/json")
+	propagation.TraceContext{}.Inject(signalCtx, propagation.HeaderCarrier(request.Header))
 	response, err := s.options.Client.Do(request)
 	if err != nil {
 		return errors.New("sidecar signal could not be delivered")
