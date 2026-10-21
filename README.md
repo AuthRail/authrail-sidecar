@@ -124,6 +124,19 @@ returns a short-lived permit. The sidecar never retries a claim after an
 uncertain response. A permit says the call may proceed; it does not prove the
 protected function ran.
 
+The protected adapter sends a signed `started` receipt to local
+`POST /execution-receipts` before invoking the provider. The sidecar forwards
+it with the deployment credential and returns only a centrally retained
+acknowledgement. Completion and reconciliation use the same endpoint. The
+sidecar does not execute the operation, infer a provider result, or retry a
+business effect. If a completion report is lost, the application must check
+the provider with the original idempotency reference and reconcile the Action.
+Only an authenticated no-effect reconciliation permits a fresh signed call
+decision and another attempt under that Action. The protected adapter reuses
+the provider idempotency key and business arguments; facts and trajectory can
+be refreshed for the new decision. Any new approval is separate.
+The sidecar forwards the executor's assertion and cannot verify the provider.
+
 ## Recover recording gaps
 
 During application-key rotation, keep the old public key available only while

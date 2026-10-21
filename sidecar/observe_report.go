@@ -36,9 +36,15 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 		return retained, "unavailable"
 	}
 	digest := sha256.Sum256(input)
+	effectInput, err := observeEffectInputBytes(request)
+	if err != nil {
+		return retained, "unavailable"
+	}
+	effectDigest := sha256.Sum256(effectInput)
 	body, err := json.Marshal(struct {
 		FormatVersion        int                  `json:"formatVersion"`
 		InputSHA256          string               `json:"inputSha256"`
+		EffectInputSHA256    string               `json:"effectInputSha256"`
 		Attribution          Attribution          `json:"attribution"`
 		IdentityVerification IdentityVerification `json:"identityVerification"`
 		ExecutorProof        IdentityProof        `json:"executorProof"`
@@ -49,7 +55,8 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 			Evaluation         Evaluation `json:"evaluation"`
 		} `json:"report"`
 	}{FormatVersion: 1, InputSHA256: hex.EncodeToString(digest[:]),
-		Attribution: request.Attribution, IdentityVerification: s.identityVerification(request, actionKey),
+		EffectInputSHA256: hex.EncodeToString(effectDigest[:]),
+		Attribution:       request.Attribution, IdentityVerification: s.identityVerification(request, actionKey),
 		ExecutorProof: request.IdentityProof, ReviewSummary: request.ReviewSummary, Report: struct {
 			OperationVersionID string     `json:"operationVersionId"`
 			Phase              string     `json:"phase"`
@@ -146,4 +153,15 @@ func observeInputBytes(request EvaluationRequest) ([]byte, error) {
 		}{arguments, result, request.FactResolutions, request.Trajectory})
 	}
 	return nil, errors.New("Observe phase is invalid")
+}
+
+// The stable effect identity excludes refreshed facts, trajectory, and result data.
+func observeEffectInputBytes(request EvaluationRequest) ([]byte, error) {
+	arguments, err := object(request.Arguments)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		Arguments map[string]any `json:"arguments"`
+	}{arguments})
 }

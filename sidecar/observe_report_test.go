@@ -62,6 +62,7 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 		}
 		var body struct {
 			InputSHA256          string               `json:"inputSha256"`
+			EffectInputSHA256    string               `json:"effectInputSha256"`
 			IdentityVerification IdentityVerification `json:"identityVerification"`
 			ExecutorProof        IdentityProof        `json:"executorProof"`
 			Report               struct {
@@ -83,7 +84,13 @@ func TestObserveReportRetainsDigestWithoutToolPayload(t *testing.T) {
 			t.Error(err)
 		}
 		expected := sha256.Sum256(input)
+		effectInput, err := observeEffectInputBytes(call(50))
+		if err != nil {
+			t.Error(err)
+		}
+		expectedEffect := sha256.Sum256(effectInput)
 		if body.InputSHA256 != hex.EncodeToString(expected[:]) ||
+			body.EffectInputSHA256 != hex.EncodeToString(expectedEffect[:]) ||
 			len(body.IdentityVerification.KeySHA256) != 64 ||
 			len(body.IdentityVerification.SignatureSHA256) != 64 ||
 			body.ExecutorProof.Signature == "" ||

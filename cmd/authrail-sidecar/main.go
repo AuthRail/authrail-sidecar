@@ -90,6 +90,8 @@ func main() {
 		mux.Handle("POST /evaluate", sidecar.EvaluationHandler(synchronizer, adapterToken))
 		mux.Handle("POST /approval-permits/claim",
 			sidecar.ApprovalPermitHandler(synchronizer, adapterToken))
+		mux.Handle("POST /execution-receipts",
+			sidecar.ExecutionReceiptHandler(synchronizer, adapterToken))
 	}
 	if operatorToken != "" {
 		handler := sidecar.OperatorGapHandler(synchronizer, operatorToken)

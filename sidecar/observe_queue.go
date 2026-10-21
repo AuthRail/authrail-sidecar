@@ -258,22 +258,35 @@ func validateQueuedObserveBody(body []byte) error {
 		return errors.New("Observe report is invalid")
 	}
 	var value map[string]json.RawMessage
-	if json.Unmarshal(body, &value) != nil ||
-		(len(value) != 4 && len(value) != 5 && len(value) != 6) ||
+	if json.Unmarshal(body, &value) != nil {
+		return errors.New("Observe report is invalid")
+	}
+	if effectDigest, ok := value["effectInputSha256"]; ok {
+		var decoded string
+		if json.Unmarshal(effectDigest, &decoded) != nil || len(decoded) != 64 {
+			return errors.New("Observe effect digest is invalid")
+		}
+		if _, err := hex.DecodeString(decoded); err != nil {
+			return errors.New("Observe effect digest is invalid")
+		}
+		delete(value, "effectInputSha256")
+	}
+	if (len(value) < 4 || len(value) > 7) ||
 		value["formatVersion"] == nil || value["inputSha256"] == nil ||
-		value["attribution"] == nil || value["report"] == nil {
+		value["attribution"] == nil || value["report"] == nil ||
+		(len(value) == 7 && value["reviewSummary"] == nil) {
 		return errors.New("Observe report is invalid")
 	}
 	if len(value) >= 5 && value["identityVerification"] == nil {
 		return errors.New("Observe report is invalid")
 	}
-	if len(value) == 6 && value["executorProof"] == nil {
+	if len(value) >= 6 && value["executorProof"] == nil {
 		return errors.New("Observe report is invalid")
 	}
 	if len(value) >= 5 && bytes.Equal(value["identityVerification"], []byte("null")) {
 		return errors.New("Observe report is invalid")
 	}
-	if len(value) == 6 && bytes.Equal(value["executorProof"], []byte("null")) {
+	if len(value) >= 6 && bytes.Equal(value["executorProof"], []byte("null")) {
 		return errors.New("Observe report is invalid")
 	}
 	if len(value) >= 5 {
@@ -292,9 +305,11 @@ func stableObserveFingerprint(body []byte) (string, error) {
 	var value struct {
 		FormatVersion        int                   `json:"formatVersion"`
 		InputSHA256          string                `json:"inputSha256"`
+		EffectInputSHA256    string                `json:"effectInputSha256"`
 		Attribution          Attribution           `json:"attribution"`
 		IdentityVerification *IdentityVerification `json:"identityVerification"`
 		ExecutorProof        *IdentityProof        `json:"executorProof"`
+		ReviewSummary        json.RawMessage       `json:"reviewSummary"`
 		Report               struct {
 			OperationVersionID string `json:"operationVersionId"`
 			Phase              string `json:"phase"`
@@ -345,13 +360,16 @@ func stableObserveFingerprint(body []byte) (string, error) {
 		identityKeySHA256 = value.IdentityVerification.KeySHA256
 	}
 	canonical, err := json.Marshal(struct {
-		InputSHA256        string      `json:"inputSha256"`
-		Attribution        Attribution `json:"attribution"`
-		OperationVersionID string      `json:"operationVersionId"`
-		Phase              string      `json:"phase"`
-		IdentityKeySHA256  string      `json:"identityKeySha256"`
-	}{value.InputSHA256, value.Attribution, value.Report.OperationVersionID, value.Report.Phase,
-		identityKeySHA256})
+		InputSHA256        string          `json:"inputSha256"`
+		EffectInputSHA256  string          `json:"effectInputSha256,omitempty"`
+		Attribution        Attribution     `json:"attribution"`
+		OperationVersionID string          `json:"operationVersionId"`
+		Phase              string          `json:"phase"`
+		IdentityKeySHA256  string          `json:"identityKeySha256"`
+		ReviewSummary      json.RawMessage `json:"reviewSummary,omitempty"`
+	}{value.InputSHA256, value.EffectInputSHA256, value.Attribution,
+		value.Report.OperationVersionID, value.Report.Phase,
+		identityKeySHA256, value.ReviewSummary})
 	if err != nil {
 		return "", err
 	}

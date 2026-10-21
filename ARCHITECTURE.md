@@ -17,15 +17,21 @@ AuthRail ── signed deployment bundle ──▶ sidecar ◀── signed call
 | --- | --- |
 | Protected application | Authenticate the caller, resolve the target, read trusted context, keep provider credentials, and execute the function. |
 | Local adapter | Bind the reviewed Operation Version and stable action key to call/result hooks; sign the application's claims. |
-| Sidecar | Authenticate the adapter, verify the application signature and active Rails, evaluate locally, and queue bounded reports. |
+| Sidecar | Authenticate the adapter, verify the application signature and active Rails, evaluate locally, queue bounded decision reports, and forward signed execution receipts. |
 | AuthRail server | Authenticate the deployment, retain accepted Action/certificate/Activity records, and expose customer history. |
 
 The application key proves that the application asserted principal, session,
 resource, and context references. It does **not** independently prove the
 person, resource, provider read, execution, or that every action passed through
-the adapter. A bypass path remains advisory. Predecision responses in both
+the adapter. A signed execution receipt establishes what the registered
+application reported, while the provider's record remains external. A bypass
+path remains advisory. Predecision responses in both
 modes report `enforced: false` because the sidecar cannot verify that the
 adapter applied them. Neither sidecar health nor a decision is execution proof.
+The sidecar reports both the full decision input digest and the canonical
+business arguments digest. The latter stays fixed across a reconciled no-effect
+retry while facts and trajectory are evaluated afresh; each execution receipt
+still binds its own full call digest.
 
 ## Bundle synchronization
 
