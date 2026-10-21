@@ -21,6 +21,7 @@ type queuedObserve struct {
 	ActionKey     string          `json:"actionKey"`
 	Phase         string          `json:"phase"`
 	Body          json.RawMessage `json:"body"`
+	Traceparent   string          `json:"traceparent,omitempty"`
 	BlockedReason string          `json:"blockedReason,omitempty"`
 }
 
@@ -66,6 +67,7 @@ func (s *Synchronizer) ensureObserveQueueLocked() error {
 	for _, entry := range state.Entries {
 		key := entry.ActionKey + "\x00" + entry.Phase
 		if !actionKeyPattern.MatchString(entry.ActionKey) ||
+			!validTraceparent(entry.Traceparent) ||
 			(entry.Phase != "tool_call" && entry.Phase != "tool_result") ||
 			validateQueuedObserveBody(entry.Body) != nil ||
 			(entry.BlockedReason != "" && entry.BlockedReason != "application_key_closed") {

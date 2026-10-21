@@ -46,6 +46,11 @@ func ApprovalPermitHandler(syncer *Synchronizer, adapterToken string) http.Handl
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		traceparent, valid := requestTraceparent(r)
+		if !valid {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
@@ -79,6 +84,9 @@ func ApprovalPermitHandler(syncer *Synchronizer, adapterToken string) http.Handl
 		}
 		request.Header.Set("Authorization", "Bearer "+syncer.options.Token)
 		request.Header.Set("Content-Type", "application/json")
+		if traceparent != "" {
+			request.Header.Set("traceparent", traceparent)
+		}
 		response, err := syncer.options.Client.Do(request)
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)

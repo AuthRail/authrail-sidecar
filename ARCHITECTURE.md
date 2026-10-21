@@ -105,7 +105,7 @@ and signed application assertion to AuthRail. It never uploads raw tool
 arguments, results, fact values, or lookup keys. The server verifies the
 registered application key and retains an idempotent Action and a certificate
 marked as deployment-reported, not independently verified as enforced or
-executed. The Node Enforce adapter requires retained call and result
+executed. The Node and Go Enforce adapters require retained call and result
 reports before proceeding at each phase.
 
 Before upload, the sidecar writes metadata to a private queue beside its

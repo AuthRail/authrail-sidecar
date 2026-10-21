@@ -25,7 +25,7 @@ var errExecutorKeyClosed = errors.New("application key no longer accepts reports
 // retainObserve sends digests and decision metadata, never tool arguments or results.
 // Failure is visible in the local response and cannot change the customer's tool call.
 func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
-	request EvaluationRequest, evaluation Evaluation) (retainedObserve, string) {
+	request EvaluationRequest, evaluation Evaluation, traceparent string) (retainedObserve, string) {
 	var retained retainedObserve
 	if s.options.Token == "" || s.options.ControlPlaneURL == "" ||
 		evaluation.BundleID == nil || evaluation.Coverage != "evaluated" {
@@ -65,7 +65,7 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 	if err != nil {
 		return retained, "unavailable"
 	}
-	entry := queuedObserve{ActionKey: actionKey, Phase: request.Phase, Body: body}
+	entry := queuedObserve{ActionKey: actionKey, Phase: request.Phase, Body: body, Traceparent: traceparent}
 	// Persist before upload so a process crash cannot turn an accepted check into a silent gap.
 	entry, err = s.enqueueObserve(entry)
 	if err != nil {
@@ -101,6 +101,9 @@ func (s *Synchronizer) sendObserve(ctx context.Context, entry queuedObserve) (re
 	httpRequest.Header.Set("Authorization", "Bearer "+s.options.Token)
 	httpRequest.Header.Set("Idempotency-Key", entry.ActionKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
+	if entry.Traceparent != "" {
+		httpRequest.Header.Set("traceparent", entry.Traceparent)
+	}
 	response, err := s.options.Client.Do(httpRequest)
 	if err != nil {
 		return retained, errors.New("control plane is unavailable")

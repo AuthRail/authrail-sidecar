@@ -25,8 +25,8 @@ boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node)
 or [Go SDK](https://github.com/AuthRail/authrail-sdk-go), or implement the same
 local decision protocol. The sidecar is not a hosted decision endpoint or a
 shared service for unrelated deployments.
-The Node SDK has an Enforce wrapper; the current Go SDK and both SDKs' Observe
-wrappers remain advisory. Review the installed adapter before switching modes.
+The Node and Go SDKs have Enforce wrappers. Both SDKs' Observe wrappers remain
+advisory. Review the installed adapter and bypass paths before switching modes.
 
 ## Before you start
 
@@ -53,6 +53,19 @@ Go 1.26 or newer is required to build from source:
 go build -o authrail-sidecar ./cmd/authrail-sidecar
 ```
 
+Create a local archive with `sh scripts/package.sh VERSION OUTPUT_DIRECTORY`.
+It contains the current-platform binary, README, protocol and compatibility guides,
+`conformance/v1` fixtures, license, and format manifest, with an adjacent SHA-256 checksum. Verify the checksum
+before unpacking and use the binary in the archive. This recipe does not
+publish an official release. Install a pinned sidecar revision and pinned SDK
+version together; there is no published compatibility matrix or prebuilt
+release artifact yet. The current wire format uses
+`formatVersion: 1` for signed Rail bundles and local evaluation requests.
+The Node and Go adapters also use the local permit and receipt endpoints.
+Do not infer compatibility from matching format numbers alone: run the
+versioned conformance fixtures in `conformance/v1` and verify the exact
+deployment's signed bundle and coverage before Enforce.
+
 Configure the process before starting it:
 
 | Variable | Purpose |
@@ -75,6 +88,21 @@ the five-second Rail sync interval. Keep the listener on loopback.
 The sidecar checks the signed bundle's organisation, deployment, sequence,
 activation time, expiry, and signature before using it. An invalid private
 state file stops startup rather than resetting rollback protection.
+
+For an upgrade, stop only the instance being upgraded under your own change
+process, preserve `AUTHRAIL_STATE_FILE` and its adjacent `.observations`,
+recording-gap, and trajectory files as one private set, and install the new
+binary at the pinned revision. Use the same deployment ID, trusted key pins,
+adapter token, and public executor key. Check `/health` for the expected
+sequence, bundle validity, queue counts, and key fingerprints before routing
+protected calls. For rollback, restore the previous binary while keeping the
+newer state set; never restore an older state snapshot that would lower the
+accepted bundle sequence or erase queued reports. A binary unable to read
+that state must fail closed for Enforce and be resolved operationally, not
+started with a blank file. An isolated package smoke test unpacks the sidecar,
+starts it with a fresh private state path, restarts it, and rejects a lower
+configuration sequence. A packaged process restart on a real deployment
+remains a separate acceptance check.
 
 ## Connect your application
 
@@ -152,4 +180,8 @@ good.
 
 - [Architecture](ARCHITECTURE.md): trust boundaries, decision protocol, local
   state, queue, and recovery invariants.
+- [Local protocol](PROTOCOL.md): raw HTTP shape, signed phases, effect receipts,
+  conformance, and coverage review.
+- [Compatibility](COMPATIBILITY.md): current source protocol and state formats,
+  component checks, and the limit of the unpublished release matrix.
 - [Contributing](CONTRIBUTING.md): build and test conventions.

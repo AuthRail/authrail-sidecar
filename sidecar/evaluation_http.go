@@ -33,6 +33,11 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		traceparent, valid := requestTraceparent(r)
+		if !valid {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
@@ -79,7 +84,7 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string) http.Handler {
 		}
 		syncer.trajectoryMu.Unlock()
 		if retained, status := syncer.retainObserve(r.Context(),
-			r.Header.Get("Idempotency-Key"), request, evaluation); status == "retained" {
+			r.Header.Get("Idempotency-Key"), request, evaluation, traceparent); status == "retained" {
 			evaluation.RecordingStatus = status
 			evaluation.ActionID = retained.ActionID
 			evaluation.ApprovalRequestID = retained.ApprovalRequestID

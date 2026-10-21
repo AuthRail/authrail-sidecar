@@ -277,6 +277,7 @@ func TestObserveRecordingFailureKeepsLocalDecision(t *testing.T) {
 }
 
 func TestObserveReportSurvivesRestartAndRetriesWithoutToolPayload(t *testing.T) {
+	const trace = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
 	policy := decisionRail("00000000-0000-4000-8000-000000000012",
 		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
 			"id": "ordinary", "when": decisionCondition("lte", 100),
@@ -292,6 +293,7 @@ func TestObserveReportSurvivesRestartAndRetriesWithoutToolPayload(t *testing.T) 
 	request := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(requestBody))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
 	request.Header.Set("Idempotency-Key", "invoice-123")
+	request.Header.Set("traceparent", trace)
 	response := httptest.NewRecorder()
 	EvaluationHandler(syncer, strings.Repeat("a", 32)).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -316,8 +318,9 @@ func TestObserveReportSurvivesRestartAndRetriesWithoutToolPayload(t *testing.T) 
 	accepted := 0
 	recovered := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		accepted++
-		if r.Header.Get("Idempotency-Key") != "invoice-123" {
-			t.Error("action key changed on retry")
+		if r.Header.Get("Idempotency-Key") != "invoice-123" ||
+			r.Header.Get("traceparent") != trace {
+			t.Error("action or trace context changed on retry")
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"actionId":"00000000-0000-4000-8000-000000000020","certificateId":"00000000-0000-4000-8000-000000000021","replayed":false}`))
