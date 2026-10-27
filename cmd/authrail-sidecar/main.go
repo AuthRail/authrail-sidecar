@@ -97,8 +97,13 @@ func main() {
 	if adapterToken != "" {
 		mux.Handle("POST /evaluate", telemetry.WrapHTTP("evaluate",
 			sidecar.EvaluationHandler(synchronizer, adapterToken, telemetry)))
+		mux.Handle("GET /guard-requirements", telemetry.WrapHTTP("guard_requirements",
+			sidecar.GuardRequirementsHandler(synchronizer, adapterToken)))
 		mux.Handle("POST /approval-permits/claim",
 			telemetry.WrapHTTP("approval_claim", sidecar.ApprovalPermitHandler(synchronizer, adapterToken)))
+		mux.Handle("POST /approval-permits/recover",
+			telemetry.WrapHTTP("approval_recover", sidecar.ApprovalPermitRecoveryHandler(synchronizer, adapterToken)))
+		mux.Handle("POST /execution/observed-receipts", telemetry.WrapHTTP("observed_execution_receipt", sidecar.ObservedExecutionReceiptHandler(synchronizer, adapterToken)))
 		mux.Handle("POST /execution-receipts",
 			telemetry.WrapHTTP("execution_receipt", sidecar.ExecutionReceiptHandler(synchronizer, adapterToken)))
 	}

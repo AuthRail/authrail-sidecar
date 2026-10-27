@@ -26,10 +26,11 @@ type queuedObserve struct {
 }
 
 type observeQueueState struct {
-	FormatVersion  int             `json:"formatVersion"`
-	OrganisationID string          `json:"organisationId"`
-	DeploymentID   string          `json:"deploymentId"`
-	Entries        []queuedObserve `json:"entries"`
+	FormatVersion  int                      `json:"formatVersion"`
+	OrganisationID string                   `json:"organisationId"`
+	DeploymentID   string                   `json:"deploymentId"`
+	Entries        []queuedObserve          `json:"entries"`
+	Outcomes       []queuedExecutionOutcome `json:"outcomes,omitempty"`
 }
 
 func (s *Synchronizer) observeQueuePath() string { return s.options.StateFile + ".observations" }
@@ -60,7 +61,7 @@ func (s *Synchronizer) ensureObserveQueueLocked() error {
 	data, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(data, &state) != nil || state.FormatVersion != 1 ||
 		state.OrganisationID != s.options.OrganisationID ||
-		state.DeploymentID != s.options.DeploymentID || len(state.Entries) > maxObserveReports {
+		state.DeploymentID != s.options.DeploymentID || len(state.Entries)+len(state.Outcomes) > maxObserveReports {
 		return errors.New("Observe report queue is invalid")
 	}
 	seen := make(map[string]struct{}, len(state.Entries))
@@ -78,6 +79,15 @@ func (s *Synchronizer) ensureObserveQueueLocked() error {
 		}
 		seen[key] = struct{}{}
 	}
+	outcomeSeen := map[string]bool{}
+	for _, entry := range state.Outcomes {
+		key := outcomeKey(entry.Receipt)
+		if !validObservedReceipt(entry.Receipt) || !validTraceparent(entry.Traceparent) || outcomeSeen[key] {
+			return errors.New("execution outcome queue is invalid")
+		}
+		outcomeSeen[key] = true
+	}
+
 	s.observeQueue = state
 	s.observeQueueLoaded = true
 	return nil
@@ -124,7 +134,7 @@ func (s *Synchronizer) enqueueObserve(entry queuedObserve) (queuedObserve, error
 			return queuedObserve{}, errors.New("Observe action key and phase already have different queued input")
 		}
 	}
-	if len(s.observeQueue.Entries) >= maxObserveReports || len(entry.Body) > maxObserveReportBytes {
+	if len(s.observeQueue.Entries)+len(s.observeQueue.Outcomes) >= maxObserveReports || len(entry.Body) > maxObserveReportBytes {
 		return queuedObserve{}, errors.New("Observe report queue is full")
 	}
 	next := s.observeQueue
@@ -246,6 +256,9 @@ func (s *Synchronizer) RetryObservations(ctx context.Context) error {
 		if err := s.acknowledgeObserve(entry); err != nil {
 			failed = true
 		}
+	}
+	if s.retryExecutionOutcomes(ctx) != nil {
+		failed = true
 	}
 	if failed {
 		return errors.New("some Observe reports remain queued")

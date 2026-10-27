@@ -74,7 +74,13 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 	if entry.BlockedReason != "" {
 		return retained, "unavailable"
 	}
-	fastCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 750*time.Millisecond)
+	// Enforce must receive a retained Action before the executor can run. Allow
+	// the control plane's signing path a bounded window; Observe stays advisory.
+	deadline := 750 * time.Millisecond
+	if evaluation.Mode == "enforce" {
+		deadline = 2500 * time.Millisecond
+	}
+	fastCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deadline)
 	defer cancel()
 	retained, err = s.sendObserve(fastCtx, entry)
 	if err != nil {
@@ -141,7 +147,8 @@ func observeInputBytes(request EvaluationRequest) ([]byte, error) {
 			Arguments       map[string]any      `json:"arguments"`
 			FactResolutions []FactResolution    `json:"factResolutions,omitempty"`
 			Trajectory      *TrajectorySnapshot `json:"trajectory,omitempty"`
-		}{arguments, request.FactResolutions, request.Trajectory})
+			GuardEvidence   []GuardEvidence     `json:"guardEvidence,omitempty"`
+		}{arguments, request.FactResolutions, request.Trajectory, request.GuardEvidence})
 	}
 	if request.Phase == "tool_result" {
 		result, err := object(request.Result)
@@ -153,7 +160,8 @@ func observeInputBytes(request EvaluationRequest) ([]byte, error) {
 			Result          map[string]any      `json:"result"`
 			FactResolutions []FactResolution    `json:"factResolutions,omitempty"`
 			Trajectory      *TrajectorySnapshot `json:"trajectory,omitempty"`
-		}{arguments, result, request.FactResolutions, request.Trajectory})
+			GuardEvidence   []GuardEvidence     `json:"guardEvidence,omitempty"`
+		}{arguments, result, request.FactResolutions, request.Trajectory, request.GuardEvidence})
 	}
 	return nil, errors.New("Observe phase is invalid")
 }
@@ -164,7 +172,14 @@ func observeEffectInputBytes(request EvaluationRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	callEvidence := []GuardEvidence{}
+	for _, proof := range request.GuardEvidence {
+		if proof.Phase == "tool_call" {
+			callEvidence = append(callEvidence, proof)
+		}
+	}
 	return json.Marshal(struct {
-		Arguments map[string]any `json:"arguments"`
-	}{arguments})
+		Arguments     map[string]any  `json:"arguments"`
+		GuardEvidence []GuardEvidence `json:"guardEvidence,omitempty"`
+	}{arguments, callEvidence})
 }

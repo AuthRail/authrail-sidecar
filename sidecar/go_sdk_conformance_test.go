@@ -67,3 +67,50 @@ func dataRequest(t *testing.T, request EvaluationRequest) []byte {
 	}
 	return data
 }
+
+// The same canonical bytes must be signed by either SDK and verified by the sidecar.
+func TestSharedCanonicalInputCorpus(t *testing.T) {
+	data, err := os.ReadFile("../conformance/v1/canonical-input.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		Cases []struct {
+			Name            string              `json:"name"`
+			Phase           string              `json:"phase"`
+			Arguments       json.RawMessage     `json:"arguments"`
+			Result          json.RawMessage     `json:"result"`
+			FactResolutions []FactResolution    `json:"factResolutions"`
+			Trajectory      *TrajectorySnapshot `json:"trajectory"`
+			GuardEvidence   []GuardEvidence     `json:"guardEvidence"`
+			CanonicalInput  string              `json:"canonicalInput"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range corpus.Cases {
+		t.Run(item.Name, func(t *testing.T) {
+			actual, err := observeInputBytes(EvaluationRequest{Phase: item.Phase, Arguments: item.Arguments,
+				Result: item.Result, FactResolutions: item.FactResolutions, Trajectory: item.Trajectory, GuardEvidence: item.GuardEvidence})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(actual) != item.CanonicalInput {
+				t.Fatalf("canonical mismatch: %s", actual)
+			}
+		})
+	}
+}
+
+func TestGuardDeclarationsRejectUnknownSemantics(t *testing.T) {
+	for _, raw := range []string{
+		`{"kind":"sanitize","handlerId":"redact","handlerVersion":"a","target":{"root":"arguments","path":["text"]},"optional":true}`,
+		`{"kind":"sanitize","handlerId":"redact","handlerVersion":"a","target":{"root":"arguments","path":["text"],"wholeObject":true}}`,
+	} {
+		var item GuardObligation
+		if json.Unmarshal([]byte(raw), &item) == nil {
+			t.Fatal("unknown Guard semantics accepted")
+		}
+	}
+}

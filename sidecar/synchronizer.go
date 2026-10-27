@@ -255,6 +255,7 @@ func (s *Synchronizer) Snapshot() Snapshot {
 		result.ExecutorKeySHA256 = result.ExecutorKeySHA256s[0]
 	}
 	s.observeMu.Lock()
+	result.PendingReports += len(s.observeQueue.Outcomes)
 	for _, entry := range s.observeQueue.Entries {
 		if entry.BlockedReason == "" {
 			result.PendingReports++

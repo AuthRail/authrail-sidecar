@@ -21,6 +21,7 @@ type EvaluationRequest struct {
 	Attribution        Attribution         `json:"attribution"`
 	IdentityProof      IdentityProof       `json:"identityProof"`
 	ReviewSummary      *ReviewSummary      `json:"reviewSummary,omitempty"`
+	GuardEvidence      []GuardEvidence     `json:"guardEvidence,omitempty"`
 }
 
 type Attribution struct {
@@ -32,25 +33,26 @@ type Attribution struct {
 }
 
 type Evaluation struct {
-	RequestID         string            `json:"requestId"`
-	Mode              string            `json:"mode"`
-	Enforced          bool              `json:"enforced"`
-	Coverage          string            `json:"coverage"`
-	Outcome           string            `json:"outcome"`
-	Sequence          int64             `json:"sequence"`
-	BundleID          *string           `json:"bundleId"`
-	RailVersionIDs    []string          `json:"railVersionIds"`
-	MatchedRuleIDs    []string          `json:"matchedRuleIds"`
-	ReasonCodes       []string          `json:"reasonCodes"`
-	Unresolved        []UnresolvedField `json:"unresolved"`
-	Facts             []FactSummary     `json:"facts,omitempty"`
-	RecordingStatus   string            `json:"recordingStatus,omitempty"`
-	ReportReplayed    *bool             `json:"reportReplayed,omitempty"`
-	ActionID          string            `json:"actionId,omitempty"`
-	ApprovalRequestID *string           `json:"approvalRequestId,omitempty"`
-	CertificateID     string            `json:"certificateId,omitempty"`
-	readResult        bool              `json:"-"`
-	readCall          bool              `json:"-"`
+	RequestID         string                  `json:"requestId"`
+	Mode              string                  `json:"mode"`
+	Enforced          bool                    `json:"enforced"`
+	Coverage          string                  `json:"coverage"`
+	Outcome           string                  `json:"outcome"`
+	Sequence          int64                   `json:"sequence"`
+	BundleID          *string                 `json:"bundleId"`
+	RailVersionIDs    []string                `json:"railVersionIds"`
+	MatchedRuleIDs    []string                `json:"matchedRuleIds"`
+	ReasonCodes       []string                `json:"reasonCodes"`
+	Unresolved        []UnresolvedField       `json:"unresolved"`
+	Facts             []FactSummary           `json:"facts,omitempty"`
+	Obligations       []GuardObligationStatus `json:"obligations,omitempty"`
+	RecordingStatus   string                  `json:"recordingStatus,omitempty"`
+	ReportReplayed    *bool                   `json:"reportReplayed,omitempty"`
+	ActionID          string                  `json:"actionId,omitempty"`
+	ApprovalRequestID *string                 `json:"approvalRequestId,omitempty"`
+	CertificateID     string                  `json:"certificateId,omitempty"`
+	readResult        bool                    `json:"-"`
+	readCall          bool                    `json:"-"`
 }
 
 type UnresolvedField struct {
@@ -78,8 +80,9 @@ type railBinding struct {
 		} `json:"resourceIdentity"`
 	} `json:"operationContract"`
 	Content struct {
-		Rules        []json.RawMessage `json:"rules"`
-		FactBindings []struct {
+		FormatVersion int               `json:"formatVersion"`
+		Rules         []json.RawMessage `json:"rules"`
+		FactBindings  []struct {
 			FactKey           string `json:"factKey"`
 			DataRailVersionID string `json:"dataRailVersionId"`
 		} `json:"factBindings"`
@@ -93,12 +96,13 @@ type availableField struct {
 }
 
 type decisionRule struct {
-	ID                       string          `json:"id"`
-	Kind                     string          `json:"kind"`
-	Phase                    string          `json:"phase"`
-	When                     json.RawMessage `json:"when"`
-	Outcome                  string          `json:"outcome"`
-	SourceOperationVersionID string          `json:"sourceOperationVersionId"`
+	ID                       string            `json:"id"`
+	Kind                     string            `json:"kind"`
+	Phase                    string            `json:"phase"`
+	When                     json.RawMessage   `json:"when"`
+	Outcome                  string            `json:"outcome"`
+	SourceOperationVersionID string            `json:"sourceOperationVersionId"`
+	Obligations              []GuardObligation `json:"obligations,omitempty"`
 }
 
 type condition struct {
@@ -131,7 +135,7 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 	if request.FormatVersion != 1 || !uuidPattern.MatchString(request.RequestID) ||
 		!uuidPattern.MatchString(request.OperationVersionID) ||
 		(request.Phase != "tool_call" && request.Phase != "tool_result") ||
-		len(request.FactResolutions) > 100 {
+		len(request.FactResolutions) > 100 || !validGuardEvidence(request.GuardEvidence, request.Phase) {
 		return Evaluation{}, errors.New("evaluation request is invalid")
 	}
 	for _, resolution := range request.FactResolutions {
@@ -283,6 +287,33 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 			{Root: "resource", Path: []string{"id"}, Reason: "unavailable"}}
 		return response, nil
 	}
+	requirements, err := collectGuardRequirements(selected, request.Phase)
+	if err != nil {
+		return invalidBundle(response), nil
+	}
+	response.Obligations = evaluateGuardObligations(requirements, request.GuardEvidence,
+		request.Phase, manifest.BundleID, arguments, result)
+	for _, status := range response.Obligations {
+		if status.Status != "fulfilled" {
+			contextMissing = true
+			response.Unresolved = append(response.Unresolved, UnresolvedField{Root: status.Target.Root,
+				Path: status.Target.Path, Reason: "untrusted"})
+		}
+	}
+	// Result checks cannot reuse a changed or unfulfilled call processor.
+	if request.Phase == "tool_result" {
+		callRequirements, err := collectGuardRequirements(selected, "tool_call")
+		if err != nil {
+			return invalidBundle(response), nil
+		}
+		for _, status := range evaluateGuardObligations(callRequirements, request.GuardEvidence,
+			"tool_call", manifest.BundleID, arguments, result) {
+			if status.Status != "fulfilled" {
+				contextMissing = true
+				response.Unresolved = append(response.Unresolved, UnresolvedField{Root: status.Target.Root, Path: status.Target.Path, Reason: "untrusted"})
+			}
+		}
+	}
 	switch {
 	case denied:
 		response.Outcome = "deny"
@@ -313,6 +344,7 @@ func invalidBundle(value Evaluation) Evaluation {
 	value.ReasonCodes = []string{"bundle_unavailable"}
 	value.Unresolved = []UnresolvedField{}
 	value.Facts = nil
+	value.Obligations = nil
 	return value
 }
 

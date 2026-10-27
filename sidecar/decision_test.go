@@ -24,6 +24,94 @@ import (
 const decisionOperationID = "00000000-0000-4000-8000-000000000008"
 const decisionRequestID = "00000000-0000-4000-8000-000000000009"
 
+func TestGuardProcessingCannotBeClearedByMissingStaleOrChangedEvidence(t *testing.T) {
+	requirement := GuardObligation{Kind: "sanitize", HandlerID: "redact", HandlerVersion: strings.Repeat("a", 64),
+		Target: GuardTarget{Root: "arguments", Path: []string{"message"}}}
+	guard := decisionRail("00000000-0000-4000-8000-000000000010", "00000000-0000-4000-8000-000000000011", "guard", []map[string]any{{
+		"id": "safe", "phase": "tool_call", "when": decisionCondition("lte", 100), "outcome": "allow", "obligations": []GuardObligation{requirement}}})
+	guard["content"].(map[string]any)["formatVersion"] = 3
+	guard["operationContract"].(map[string]any)["availableFields"] = []map[string]any{{"root": "arguments", "path": []string{"message"}, "type": "string"}}
+	policy := decisionRail("00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{guard, policy}, "enforce")
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"message":"safe"}`)
+	digest := sha256.Sum256([]byte(`"safe"`))
+	proof := GuardEvidence{BundleID: bundleID, HandlerID: requirement.HandlerID, HandlerVersion: requirement.HandlerVersion,
+		Kind: requirement.Kind, Target: requirement.Target, Phase: "tool_call", InputSHA256: strings.Repeat("b", 64), OutputSHA256: hex.EncodeToString(digest[:])}
+	for _, test := range []struct {
+		name     string
+		evidence []GuardEvidence
+		allowed  bool
+	}{
+		{"missing", nil, false}, {"exact", []GuardEvidence{proof}, true},
+		{"duplicate", []GuardEvidence{proof, proof}, false},
+		{"changed output", []GuardEvidence{func() GuardEvidence { value := proof; value.OutputSHA256 = strings.Repeat("c", 64); return value }()}, false},
+		{"stale bundle", []GuardEvidence{func() GuardEvidence { value := proof; value.BundleID = decisionRequestID; return value }()}, false},
+		{"wrong handler", []GuardEvidence{func() GuardEvidence { value := proof; value.HandlerVersion = strings.Repeat("d", 64); return value }()}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request.GuardEvidence = test.evidence
+			decision, err := syncer.Evaluate(request)
+			if err != nil || (decision.Outcome == "allow") != test.allowed {
+				t.Fatalf("processing bypass: %+v %v", decision, err)
+			}
+		})
+	}
+	request.GuardEvidence = []GuardEvidence{proof}
+	signed := signedCall(t, syncer, request, "processing-attempt")
+	if err := syncer.verifyIdentityProof(signed, "processing-attempt"); err != nil {
+		t.Fatal(err)
+	}
+	signed.GuardEvidence[0].InputSHA256 = strings.Repeat("e", 64)
+	if syncer.verifyIdentityProof(signed, "processing-attempt") == nil {
+		t.Fatal("changed provenance kept a valid signature")
+	}
+	request.GuardEvidence = []GuardEvidence{proof}
+	callIdentity, _ := observeEffectInputBytes(request)
+	request.Phase = "tool_result"
+	request.Result = json.RawMessage(`{"text":"safe"}`)
+	resultProof := proof
+	resultProof.Phase = "tool_result"
+	resultProof.Target = GuardTarget{Root: "result", Path: []string{"text"}}
+	request.GuardEvidence = append(request.GuardEvidence, resultProof)
+	resultIdentity, _ := observeEffectInputBytes(request)
+	if !bytes.Equal(callIdentity, resultIdentity) {
+		t.Fatal("result processing changed the business-effect identity")
+	}
+	request.GuardEvidence[0].InputSHA256 = strings.Repeat("f", 64)
+	changedIdentity, _ := observeEffectInputBytes(request)
+	if bytes.Equal(callIdentity, changedIdentity) {
+		t.Fatal("different call processing reused the business-effect identity")
+	}
+}
+
+func TestGuardRequirementReadDoesNotAuthorizeOrMutateState(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{policy}, "enforce")
+	before, _ := json.Marshal(syncer.state)
+	request := httptest.NewRequest(http.MethodGet, "/guard-requirements?operationVersionId="+decisionOperationID+"&phase=tool_call", nil)
+	request.Header.Set("Authorization", "Bearer adapter-token")
+	response := httptest.NewRecorder()
+	GuardRequirementsHandler(syncer, "adapter-token").ServeHTTP(response, request)
+	var plan GuardPlan
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &plan) != nil || plan.Coverage != "evaluated" || len(plan.Requirements) != 0 || plan.BundleID == nil {
+		t.Fatalf("invalid plan: %s", response.Body.String())
+	}
+	after, _ := json.Marshal(syncer.state)
+	if !bytes.Equal(before, after) {
+		t.Fatal("read changed persistent sidecar state")
+	}
+	if _, err := os.Stat(syncer.options.StateFile); !os.IsNotExist(err) {
+		t.Fatal("planning wrote a state file")
+	}
+	request.Header.Set("Authorization", "Bearer wrong")
+	response = httptest.NewRecorder()
+	GuardRequirementsHandler(syncer, "adapter-token").ServeHTTP(response, request)
+	if response.Code != 401 {
+		t.Fatal("planning accepted an invalid adapter token")
+	}
+}
+
 func decisionCondition(comparison string, value any) map[string]any {
 	return map[string]any{"kind": "compare",
 		"left":       map[string]any{"root": "arguments", "path": []string{"amount"}},

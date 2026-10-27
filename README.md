@@ -1,15 +1,24 @@
 # AuthRail Sidecar
 
-Run AuthRail checks beside your AI application, without sending tool inputs or
-provider credentials to AuthRail. The sidecar receives signed Rails for one
-deployment, evaluates action calls and results on the same host, and reports
-bounded decision records back to AuthRail.
+The AuthRail Sidecar is a small decision process that runs beside your AI
+application for **one Runtime deployment**. When an agent requests a tool
+action, your application's adapter sends the proposed call to the sidecar
+before the protected function runs. The sidecar evaluates the signed Rails
+published in AuthRail and returns a decision. The adapter also checks the
+function's result before giving it back to the agent.
 
-Your application still owns the workflow and the protected function. In
-**Observe** mode, checks show what the Rails would decide; they do not block
-the function or prove it executed. In **Enforce**, the protected adapter must
-stop unless a covered call is explicitly allowed and must check the result
-before exposing it. The sidecar returns a decision; only the adapter can apply it.
+For example, if an agent asks to refund a payment, your application keeps the
+Stripe credential and performs the refund. The sidecar decides whether that
+specific call is allowed under the active Rails; it does not hold the Stripe
+key or issue the refund. It reports bounded decision records to AuthRail while
+the action inputs, provider credentials, and business workflow stay with your
+application.
+
+In **Observe**, the decision is advisory and the application may still run the
+function. In **Enforce**, the protected adapter must stop unless a covered call
+is explicitly allowed, then check the result before releasing it. The
+sidecar returns decisions; only an adapter at the real execution boundary can
+apply them.
 
 ## How it fits
 
@@ -157,6 +166,10 @@ receives that credential. The server consumes an approved request once and
 returns a short-lived permit. The sidecar never retries a claim after an
 uncertain response. A permit says the call may proceed; it does not prove the
 protected function ran.
+An authenticated adapter can send the same fresh signed claim to
+`POST /approval-permits/recover` to read a still-valid existing permit after
+a lost claim response. Recovery cannot create a permit or resume an already
+started attempt.
 
 The protected adapter sends a signed `started` receipt to local
 `POST /execution-receipts` before invoking the provider. The sidecar forwards

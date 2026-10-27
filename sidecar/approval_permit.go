@@ -32,6 +32,16 @@ type approvalPermit struct {
 // ApprovalPermitHandler forwards a fresh protected-executor claim using the
 // sidecar-held deployment credential. It never retries an uncertain claim.
 func ApprovalPermitHandler(syncer *Synchronizer, adapterToken string) http.Handler {
+	return approvalPermitHandler(syncer, adapterToken, false)
+}
+
+// ApprovalPermitRecoveryHandler reads a previously claimed permit without
+// issuing another claim. Only the authenticated adapter can ask for it.
+func ApprovalPermitRecoveryHandler(syncer *Synchronizer, adapterToken string) http.Handler {
+	return approvalPermitHandler(syncer, adapterToken, true)
+}
+
+func approvalPermitHandler(syncer *Synchronizer, adapterToken string, recoverExisting bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost {
@@ -75,9 +85,15 @@ func ApprovalPermitHandler(syncer *Synchronizer, adapterToken string) http.Handl
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
+		operation := "claim"
+		expectedStatus := http.StatusCreated
+		if recoverExisting {
+			operation = "recover"
+			expectedStatus = http.StatusOK
+		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			strings.TrimRight(syncer.options.ControlPlaneURL, "/")+
-				"/runtime/deployment/approval-permits/claim", bytes.NewReader(body))
+				"/runtime/deployment/approval-permits/"+operation, bytes.NewReader(body))
 		if err != nil || syncer.options.Token == "" || syncer.options.ControlPlaneURL == "" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -93,7 +109,7 @@ func ApprovalPermitHandler(syncer *Synchronizer, adapterToken string) http.Handl
 			return
 		}
 		defer response.Body.Close()
-		if response.StatusCode != http.StatusCreated {
+		if response.StatusCode != expectedStatus {
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
@@ -105,7 +121,7 @@ func ApprovalPermitHandler(syncer *Synchronizer, adapterToken string) http.Handl
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
+		w.WriteHeader(expectedStatus)
 		_ = json.NewEncoder(w).Encode(permit)
 	})
 }

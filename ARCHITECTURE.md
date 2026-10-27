@@ -80,6 +80,19 @@ approval. Missing trusted facts or incomplete context remain unresolved.
 An unselected Operation is uncovered. The sidecar does not invoke a provider
 or model to invent missing context.
 
+## Guard processing
+
+Guard format 3 fixes phase-wide processing before condition evaluation. The
+side-effect-free authenticated `/guard-requirements` read lets protected adapters
+resolve registered handlers against the current bundle. Exact handler versions,
+reviewed string targets, current bundle, and output digests must match signed
+evidence. Resource identity cannot be transformed. Conflicting requirements or
+missing evidence stay unresolved; unsupported isolation remains blocked.
+Call-phase evidence remains in result checks and stable effect identity; result
+proofs affect the signed input without changing that identity. No raw input or
+output is added to retained reports. See `PROTOCOL.md` for canonical ordering and
+bounds. The executor signature asserts processing, not independent code proof.
+
 ## Session context
 
 For a prior-read Guard, the application may sign an ordered snapshot of

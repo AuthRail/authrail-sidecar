@@ -15,6 +15,11 @@ import (
 // ReportSignal sends bounded sidecar state; it does not report tool coverage.
 func (s *Synchronizer) ReportSignal(ctx context.Context) error {
 	snapshot := s.Snapshot()
+	lastSyncAt := snapshot.LastSyncAt
+	if lastSyncAt != nil {
+		utc := lastSyncAt.UTC()
+		lastSyncAt = &utc
+	}
 	body, err := json.Marshal(struct {
 		FormatVersion  int        `json:"formatVersion"`
 		Sequence       int64      `json:"sequence"`
@@ -25,7 +30,7 @@ func (s *Synchronizer) ReportSignal(ctx context.Context) error {
 		PendingReports int        `json:"pendingReports"`
 		BlockedReports int        `json:"blockedReports"`
 	}{1, snapshot.Sequence, snapshot.ActiveBundleID, snapshot.BundleValid,
-		snapshot.SyncStatus, snapshot.LastSyncAt, snapshot.PendingReports, snapshot.BlockedReports})
+		snapshot.SyncStatus, lastSyncAt, snapshot.PendingReports, snapshot.BlockedReports})
 	if err != nil {
 		return errors.New("sidecar signal is invalid")
 	}
