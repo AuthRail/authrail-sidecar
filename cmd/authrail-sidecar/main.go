@@ -18,6 +18,20 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		if os.Args[1] != "recording-gaps" {
+			log.Fatal("unknown command; use recording-gaps list|acknowledge for offline operator review")
+		}
+		if err := runRecordingGaps(os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	stateLock, err := acquireStateLock(os.Getenv("AUTHRAIL_STATE_FILE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer stateLock.Close()
 	pins, err := sidecar.ParsePins(os.Getenv("AUTHRAIL_TRUSTED_KEY_SHA256"))
 	if err != nil {
 		log.Fatal(err)

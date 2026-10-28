@@ -51,6 +51,9 @@ func (s *Synchronizer) ensureObserveQueueLocked() error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		s.observeQueue = state
+		if err := s.reconcileExecutionGapsLocked(); err != nil {
+			return err
+		}
 		s.observeQueueLoaded = true
 		return nil
 	}
@@ -89,6 +92,9 @@ func (s *Synchronizer) ensureObserveQueueLocked() error {
 	}
 
 	s.observeQueue = state
+	if err := s.reconcileExecutionGapsLocked(); err != nil {
+		return err
+	}
 	s.observeQueueLoaded = true
 	return nil
 }
