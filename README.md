@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/authrail-logo.png" alt="AuthRail" width="120" />
+</p>
+
 # AuthRail Sidecar
 
 AuthRail helps teams govern how AI is used: organise their compliance work,
