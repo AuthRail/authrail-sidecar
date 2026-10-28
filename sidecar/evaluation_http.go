@@ -67,7 +67,7 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string, telemetry ...*
 		syncer.trajectoryMu.Lock()
 		if err := syncer.verifyTrajectoryLocked(&request, r.Header.Get("Idempotency-Key")); err != nil {
 			syncer.trajectoryMu.Unlock()
-			writeTrajectoryUnavailable(w, request.RequestID)
+			writeTrajectoryUnavailable(w, request, syncer.Snapshot().Mode, telemetry...)
 			return
 		}
 		evaluation, err := syncer.Evaluate(request)
@@ -79,7 +79,7 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string, telemetry ...*
 		if err := syncer.recordTrajectoryResultLocked(request, r.Header.Get("Idempotency-Key"), evaluation); err != nil {
 			_ = syncer.markTrajectoryGapLocked(request)
 			syncer.trajectoryMu.Unlock()
-			writeTrajectoryUnavailable(w, request.RequestID)
+			writeTrajectoryUnavailable(w, request, syncer.Snapshot().Mode, telemetry...)
 			return
 		}
 		syncer.trajectoryMu.Unlock()
@@ -94,19 +94,25 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string, telemetry ...*
 			evaluation.RecordingStatus = status
 		}
 		if len(telemetry) > 0 && telemetry[0] != nil {
-			telemetry[0].RecordDecision(r.Context(), evaluation)
+			telemetry[0].RecordDecision(r.Context(), evaluation, request.Phase)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(evaluation)
 	})
 }
 
-func writeTrajectoryUnavailable(w http.ResponseWriter, requestID string) {
+func writeTrajectoryUnavailable(w http.ResponseWriter, request EvaluationRequest, mode string, telemetry ...*Telemetry) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(Evaluation{RequestID: requestID, Mode: "observe",
+	evaluation := Evaluation{RequestID: request.RequestID, Mode: "observe",
 		Enforced: false, Coverage: "unavailable", Outcome: "additional_context_required",
 		ReasonCodes: []string{"trajectory_unverified"},
 		Unresolved: []UnresolvedField{{Root: "trajectory",
 			Path: []string{"priorReadOperationVersionIds"}, Reason: "unavailable"}},
-		RecordingStatus: "unavailable"})
+		RecordingStatus: "unavailable"}
+	if len(telemetry) > 0 && telemetry[0] != nil {
+		telemetry[0].logs.emit(runtimeLogEvent{Event: "check_unavailable", RequestID: logID(request.RequestID),
+			Phase: logChoice(request.Phase, "tool_call", "tool_result"), Mode: logChoice(mode, "observe", "enforce"),
+			Outcome: "additional_context_required", Recording: "unavailable"})
+	}
+	_ = json.NewEncoder(w).Encode(evaluation)
 }

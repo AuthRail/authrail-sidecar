@@ -250,7 +250,8 @@ func (s *Synchronizer) RetryObservations(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, err := s.sendObserve(ctx, entry); err != nil {
+		retained, err := s.sendObserve(ctx, entry)
+		if err != nil {
 			if errors.Is(err, errExecutorKeyClosed) {
 				if blockErr := s.blockObserve(entry); blockErr == nil {
 					continue
@@ -259,6 +260,7 @@ func (s *Synchronizer) RetryObservations(ctx context.Context) error {
 			failed = true
 			continue
 		}
+		s.options.RuntimeLogs.decisionDelivered(entry, retained)
 		if err := s.acknowledgeObserve(entry); err != nil {
 			failed = true
 		}

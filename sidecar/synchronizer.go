@@ -22,6 +22,8 @@ import (
 )
 
 type Options struct {
+	// RuntimeLogs receives best-effort diagnostics; it never owns report durability.
+	RuntimeLogs        *RuntimeLogs
 	ControlPlaneURL    string
 	Token              string
 	OrganisationID     string

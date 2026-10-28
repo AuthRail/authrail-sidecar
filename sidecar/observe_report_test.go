@@ -283,6 +283,10 @@ func TestObserveReportSurvivesRestartAndRetriesWithoutToolPayload(t *testing.T) 
 			"id": "ordinary", "when": decisionCondition("lte", 100),
 			"outcome": "allow", "reason": "Ordinary amount"}})
 	syncer := decisionSynchronizer(t, []map[string]any{policy})
+	var output bytes.Buffer
+	logs := NewRuntimeLogs(&output)
+	syncer.options.RuntimeLogs = logs
+	telemetry := (&Telemetry{}).WithRuntimeLogs(logs)
 	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -295,7 +299,7 @@ func TestObserveReportSurvivesRestartAndRetriesWithoutToolPayload(t *testing.T) 
 	request.Header.Set("Idempotency-Key", "invoice-123")
 	request.Header.Set("traceparent", trace)
 	response := httptest.NewRecorder()
-	EvaluationHandler(syncer, strings.Repeat("a", 32)).ServeHTTP(response, request)
+	EvaluationHandler(syncer, strings.Repeat("a", 32), telemetry).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("local decision failed: %d", response.Code)
 	}
@@ -336,6 +340,21 @@ func TestObserveReportSurvivesRestartAndRetriesWithoutToolPayload(t *testing.T) 
 		t.Fatalf("restart did not drain queued report: accepted=%d pending=%d", accepted,
 			restarted.Snapshot().PendingReports)
 	}
+	logs.Shutdown(context.Background())
+	decoder := json.NewDecoder(&output)
+	var queued, delivered runtimeLogEvent
+	if err := decoder.Decode(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoder.Decode(&delivered); err != nil {
+		t.Fatal(err)
+	}
+	if queued.Event != "decision" || delivered.Event != "report_delivered" ||
+		queued.RequestID == "" || queued.RequestID != delivered.RequestID || queued.Phase != delivered.Phase ||
+		delivered.ActionID != "00000000-0000-4000-8000-000000000020" {
+		t.Fatalf("queued decision cannot be correlated to delivery: %+v %+v", queued, delivered)
+	}
+
 }
 
 func TestObserveQueueRejectsChangedReportForSameActionAndPhase(t *testing.T) {

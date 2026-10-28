@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,7 @@ import (
 const ledgerReadVersionID = "00000000-0000-4000-8000-000000000090"
 const ledgerTargetRequestID = "00000000-0000-4000-8000-000000000091"
 
-func ledgerDecision(t *testing.T, syncer *Synchronizer, request EvaluationRequest) Evaluation {
+func ledgerDecision(t *testing.T, syncer *Synchronizer, request EvaluationRequest, telemetry ...*Telemetry) Evaluation {
 	t.Helper()
 	actionKey := "invoice-123"
 	encoded, err := json.Marshal(signedCall(t, syncer, request, actionKey))
@@ -23,7 +24,7 @@ func ledgerDecision(t *testing.T, syncer *Synchronizer, request EvaluationReques
 	httpRequest.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
 	httpRequest.Header.Set("Idempotency-Key", actionKey)
 	response := httptest.NewRecorder()
-	EvaluationHandler(syncer, "abcdefghijklmnopqrstuvwxyz012345").ServeHTTP(response, httpRequest)
+	EvaluationHandler(syncer, "abcdefghijklmnopqrstuvwxyz012345", telemetry...).ServeHTTP(response, httpRequest)
 	if response.Code != http.StatusOK {
 		t.Fatalf("evaluation failed with HTTP %d: %s", response.Code, response.Body.String())
 	}
@@ -34,7 +35,7 @@ func ledgerDecision(t *testing.T, syncer *Synchronizer, request EvaluationReques
 	return evaluation
 }
 
-func ledgerSynchronizer(t *testing.T) *Synchronizer {
+func ledgerSynchronizer(t *testing.T, mode ...string) *Synchronizer {
 	t.Helper()
 	guard := decisionRail("00000000-0000-4000-8000-000000000092",
 		"00000000-0000-4000-8000-000000000093", "guard", []map[string]any{{
@@ -50,7 +51,11 @@ func ledgerSynchronizer(t *testing.T) *Synchronizer {
 	readRail["operationVersionId"] = ledgerReadVersionID
 	readRail["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "tool_result"}
 	readRail["operationContract"].(map[string]any)["expectedEffects"] = []map[string]any{{"kind": "read"}}
-	return decisionSynchronizer(t, []map[string]any{guard, policy, readRail})
+	selectedMode := "observe"
+	if len(mode) > 0 {
+		selectedMode = mode[0]
+	}
+	return decisionSynchronizerMode(t, []map[string]any{guard, policy, readRail}, selectedMode)
 }
 
 func ledgerStart(t *testing.T, syncer *Synchronizer) EvaluationRequest {
@@ -135,13 +140,24 @@ func TestTrajectoryLedgerPersistsReadResultAndRejectsForgedHistory(t *testing.T)
 }
 
 func TestTrajectoryLedgerRequiresSessionStartAndExactResultReplay(t *testing.T) {
-	syncer := ledgerSynchronizer(t)
+	syncer := ledgerSynchronizer(t, "enforce")
+	var output bytes.Buffer
+	logs := NewRuntimeLogs(&output)
+	telemetry := (&Telemetry{}).WithRuntimeLogs(logs)
 	request := call(50)
 	request.RequestID = ledgerTargetRequestID
 	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
 		Complete: true, PriorReadOperationVersionIDs: []string{}}
-	if result := ledgerDecision(t, syncer, request); result.Coverage != "unavailable" {
-		t.Fatalf("missing start was trusted: %+v", result)
+	if result := ledgerDecision(t, syncer, request, telemetry); result.Coverage != "unavailable" || result.Mode != "observe" {
+		t.Fatalf("unavailable wire fallback changed: %+v", result)
+	}
+	logs.Shutdown(context.Background())
+	var event runtimeLogEvent
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Event != "check_unavailable" || event.Mode != "enforce" || event.Phase != "tool_call" || event.RequestID != request.RequestID {
+		t.Fatalf("trajectory diagnostics mislabelled the protected request: %+v", event)
 	}
 	read := ledgerStart(t, syncer)
 	read.Phase = "tool_result"

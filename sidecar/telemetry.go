@@ -27,6 +27,7 @@ const telemetryQueueSize = 256
 
 // Telemetry is process-local diagnostics. It is never Action or receipt truth.
 type Telemetry struct {
+	logs          *RuntimeLogs
 	tracer        trace.Tracer
 	checks        metric.Int64Counter
 	requests      metric.Int64Counter
@@ -85,35 +86,62 @@ func NewTelemetry(ctx context.Context, endpoint string) (*Telemetry, error) {
 	return t, nil
 }
 
+// WithRuntimeLogs attaches process output before serving requests. Logs do not
+// require an OTLP exporter and never alter an authorization response.
+func (t *Telemetry) WithRuntimeLogs(logs *RuntimeLogs) *Telemetry {
+	t.logs = logs
+	return t
+}
+
 // WrapHTTP records only the fixed route and response class, never request content.
 func (t *Telemetry) WrapHTTP(route string, next http.Handler) http.Handler {
-	if t.tracer == nil {
+	if t.tracer == nil && t.logs == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
 		ctx := r.Context()
 		if parent, valid := requestTraceparent(r); valid && parent != "" {
 			ctx = propagation.TraceContext{}.Extract(ctx, propagation.HeaderCarrier(r.Header))
 		}
-		ctx, span := t.tracer.Start(ctx, "sidecar."+route,
-			trace.WithAttributes(attribute.String("authrail.route", route)))
+		var span trace.Span
+		if t.tracer != nil {
+			ctx, span = t.tracer.Start(ctx, "sidecar."+route,
+				trace.WithAttributes(attribute.String("authrail.route", route)))
+		}
 		wrapped := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(wrapped, r.WithContext(ctx))
 		statusClass := "2xx"
 		if wrapped.status >= 500 {
 			statusClass = "5xx"
-			span.SetStatus(codes.Error, "server_error")
+			if span != nil {
+				span.SetStatus(codes.Error, "server_error")
+			}
 		} else if wrapped.status >= 400 {
 			statusClass = "4xx"
 		}
-		t.requests.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("route", route), attribute.String("status_class", statusClass)))
-		span.End()
+		if t.requests != nil {
+			t.requests.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("route", route), attribute.String("status_class", statusClass)))
+		}
+		if span != nil {
+			span.End()
+		}
+		t.logs.emit(runtimeLogEvent{Event: "request_completed", Operation: logChoice(route,
+			"evaluate", "guard_requirements", "approval_claim", "approval_recover", "observed_execution_receipt", "execution_receipt"),
+			Status: wrapped.status, DurationMS: time.Since(started).Milliseconds()})
 	})
 }
 
 // RecordDecision uses enumerated output only; identifiers and payloads stay local.
-func (t *Telemetry) RecordDecision(ctx context.Context, evaluation Evaluation) {
+func (t *Telemetry) RecordDecision(ctx context.Context, evaluation Evaluation, phase ...string) {
+	if t.logs != nil {
+		p := ""
+		if len(phase) > 0 {
+			p = phase[0]
+		}
+		t.logs.decision(evaluation, p)
+	}
 	if t.checks == nil {
 		return
 	}

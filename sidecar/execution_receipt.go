@@ -25,7 +25,7 @@ type executionReceipt struct {
 
 // ExecutionReceiptHandler forwards bounded signed executor claims. It never
 // invents an outcome or retries an uncertain report on the executor's behalf.
-func ExecutionReceiptHandler(syncer *Synchronizer, adapterToken string) http.Handler {
+func ExecutionReceiptHandler(syncer *Synchronizer, adapterToken string, telemetry ...*Telemetry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost {
@@ -117,6 +117,9 @@ func ExecutionReceiptHandler(syncer *Synchronizer, adapterToken string) http.Han
 			!approvalUUID.MatchString(retained.ReceiptID) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
+		}
+		if len(telemetry) > 0 {
+			telemetry[0].recordExecution(receipt.ActionID, receipt.AttemptID, receipt.Event, "retained")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)

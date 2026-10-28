@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -68,7 +67,9 @@ func main() {
 			log.Fatal("AUTHRAIL_SYNC_INTERVAL must be at least one second")
 		}
 	}
+	runtimeLogs := sidecar.NewRuntimeLogs(os.Stderr)
 	synchronizer, err := sidecar.NewSynchronizer(sidecar.Options{
+		RuntimeLogs:        runtimeLogs,
 		ControlPlaneURL:    os.Getenv("AUTHRAIL_CONTROL_PLANE_URL"),
 		Token:              os.Getenv("AUTHRAIL_DEPLOYMENT_TOKEN"),
 		OrganisationID:     os.Getenv("AUTHRAIL_ORGANISATION_ID"),
@@ -83,9 +84,10 @@ func main() {
 	}
 	telemetry, err := sidecar.NewTelemetry(context.Background(), os.Getenv("AUTHRAIL_OTLP_ENDPOINT"))
 	if err != nil {
-		log.Print("sidecar telemetry export unavailable; continuing without export")
+		runtimeLogs.RecordServiceEvent("telemetry_export_disabled")
 		telemetry, _ = sidecar.NewTelemetry(context.Background(), "")
 	}
+	telemetry.WithRuntimeLogs(runtimeLogs)
 	address := os.Getenv("AUTHRAIL_HEALTH_ADDR")
 	if address == "" {
 		address = "127.0.0.1:7078"
@@ -106,7 +108,8 @@ func main() {
 		_ = json.NewEncoder(writer).Encode(struct {
 			sidecar.Snapshot
 			TelemetryFailures uint64 `json:"telemetryFailures"`
-		}{synchronizer.Snapshot(), telemetry.Failures()})
+			LogDrops          uint64 `json:"logDrops"`
+		}{synchronizer.Snapshot(), telemetry.Failures(), runtimeLogs.Dropped()})
 	})
 	if adapterToken != "" {
 		mux.Handle("POST /evaluate", telemetry.WrapHTTP("evaluate",
@@ -117,9 +120,9 @@ func main() {
 			telemetry.WrapHTTP("approval_claim", sidecar.ApprovalPermitHandler(synchronizer, adapterToken)))
 		mux.Handle("POST /approval-permits/recover",
 			telemetry.WrapHTTP("approval_recover", sidecar.ApprovalPermitRecoveryHandler(synchronizer, adapterToken)))
-		mux.Handle("POST /execution/observed-receipts", telemetry.WrapHTTP("observed_execution_receipt", sidecar.ObservedExecutionReceiptHandler(synchronizer, adapterToken)))
+		mux.Handle("POST /execution/observed-receipts", telemetry.WrapHTTP("observed_execution_receipt", sidecar.ObservedExecutionReceiptHandler(synchronizer, adapterToken, telemetry)))
 		mux.Handle("POST /execution-receipts",
-			telemetry.WrapHTTP("execution_receipt", sidecar.ExecutionReceiptHandler(synchronizer, adapterToken)))
+			telemetry.WrapHTTP("execution_receipt", sidecar.ExecutionReceiptHandler(synchronizer, adapterToken, telemetry)))
 	}
 	if operatorToken != "" {
 		handler := sidecar.OperatorGapHandler(synchronizer, operatorToken)
@@ -132,20 +135,20 @@ func main() {
 	defer stop()
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Print("sidecar health listener stopped")
+			runtimeLogs.RecordServiceEvent("listener_stopped")
 			stop()
 		}
 	}()
-	log.Print("AuthRail sidecar configuration sync started")
+	runtimeLogs.RecordServiceEvent("sidecar_started")
 	if err := telemetry.Run(ctx, "sync", synchronizer.Sync); err != nil && ctx.Err() == nil {
-		log.Print("initial configuration sync: ", safeError(err))
+		runtimeLogs.RecordServiceEvent("configuration_sync_failed")
 	}
 	go func() {
 		retryTicker := time.NewTicker(15 * time.Second)
 		defer retryTicker.Stop()
 		for {
 			if err := telemetry.Run(ctx, "retry_reports", synchronizer.RetryObservations); err != nil && ctx.Err() == nil {
-				log.Print("Observe reports remain queued")
+				runtimeLogs.RecordServiceEvent("reports_queued")
 			}
 			select {
 			case <-ctx.Done():
@@ -160,7 +163,7 @@ func main() {
 		defer signalTicker.Stop()
 		for {
 			if err := telemetry.Run(ctx, "health_signal", synchronizer.ReportSignal); err != nil && ctx.Err() == nil {
-				log.Print("sidecar signal could not be delivered")
+				runtimeLogs.RecordServiceEvent("health_signal_failed")
 			}
 			select {
 			case <-ctx.Done():
@@ -177,22 +180,14 @@ func main() {
 			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = server.Shutdown(shutdown)
 			_ = telemetry.Shutdown(shutdown)
+			runtimeLogs.RecordServiceEvent("sidecar_stopped")
+			runtimeLogs.Shutdown(shutdown)
 			cancel()
 			return
 		case <-ticker.C:
 			if err := telemetry.Run(ctx, "sync", synchronizer.Sync); err != nil && ctx.Err() == nil {
-				log.Print("configuration sync: ", safeError(err))
+				runtimeLogs.RecordServiceEvent("configuration_sync_failed")
 			}
 		}
 	}
-}
-
-func safeError(err error) string {
-	// The synchronizer returns controlled errors; keep provider responses and
-	// deployment credentials out of process logs.
-	message := err.Error()
-	if strings.Contains(message, "unauthorized") {
-		return "deployment credential unauthorized"
-	}
-	return "configuration unavailable or invalid"
 }

@@ -195,12 +195,13 @@ func (s *Synchronizer) retryExecutionOutcomes(ctx context.Context) error {
 			return ctx.Err()
 		}
 		attempt, cancel := context.WithTimeout(ctx, 3*time.Second)
-		_, err := s.sendExecutionOutcome(attempt, entry)
+		retained, err := s.sendExecutionOutcome(attempt, entry)
 		cancel()
 		if err != nil {
 			failed = true
 			continue
 		}
+		s.options.RuntimeLogs.emit(runtimeLogEvent{Event: "report_delivered", Operation: "execution_report", ActionID: logID(retained.ActionID), AttemptID: logID(entry.Receipt.AttemptID), Recording: "retained"})
 		if s.acknowledgeExecutionOutcome(entry) != nil {
 			failed = true
 		}
@@ -212,7 +213,7 @@ func (s *Synchronizer) retryExecutionOutcomes(ctx context.Context) error {
 }
 
 // ObservedExecutionReceiptHandler persists signed outcomes without delaying the customer's tool.
-func ObservedExecutionReceiptHandler(s *Synchronizer, adapterToken string) http.Handler {
+func ObservedExecutionReceiptHandler(s *Synchronizer, adapterToken string, telemetry ...*Telemetry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost {
@@ -257,11 +258,17 @@ func ObservedExecutionReceiptHandler(s *Synchronizer, adapterToken string) http.
 		retained, err := s.sendExecutionOutcome(ctx, entry)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
+			if len(telemetry) > 0 {
+				telemetry[0].recordExecution("", receipt.AttemptID, receipt.Event, "queued")
+			}
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]string{"recordingStatus": "queued"})
 			return
 		}
 		_ = s.acknowledgeExecutionOutcome(entry)
+		if len(telemetry) > 0 {
+			telemetry[0].recordExecution(retained.ActionID, receipt.AttemptID, receipt.Event, "retained")
+		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(retained)
 	})
