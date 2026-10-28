@@ -1,0 +1,821 @@
+package sidecar
+
+import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+const decisionOperationID = "00000000-0000-4000-8000-000000000008"
+const decisionRequestID = "00000000-0000-4000-8000-000000000009"
+
+func TestGuardProcessingCannotBeClearedByMissingStaleOrChangedEvidence(t *testing.T) {
+	requirement := GuardObligation{Kind: "sanitize", HandlerID: "redact", HandlerVersion: strings.Repeat("a", 64),
+		Target: GuardTarget{Root: "arguments", Path: []string{"message"}}}
+	guard := decisionRail("00000000-0000-4000-8000-000000000010", "00000000-0000-4000-8000-000000000011", "guard", []map[string]any{{
+		"id": "safe", "phase": "tool_call", "when": decisionCondition("lte", 100), "outcome": "allow", "obligations": []GuardObligation{requirement}}})
+	guard["content"].(map[string]any)["formatVersion"] = 3
+	guard["operationContract"].(map[string]any)["availableFields"] = []map[string]any{{"root": "arguments", "path": []string{"message"}, "type": "string"}}
+	policy := decisionRail("00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{guard, policy}, "enforce")
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"message":"safe"}`)
+	digest := sha256.Sum256([]byte(`"safe"`))
+	proof := GuardEvidence{BundleID: bundleID, HandlerID: requirement.HandlerID, HandlerVersion: requirement.HandlerVersion,
+		Kind: requirement.Kind, Target: requirement.Target, Phase: "tool_call", InputSHA256: strings.Repeat("b", 64), OutputSHA256: hex.EncodeToString(digest[:])}
+	for _, test := range []struct {
+		name     string
+		evidence []GuardEvidence
+		allowed  bool
+	}{
+		{"missing", nil, false}, {"exact", []GuardEvidence{proof}, true},
+		{"duplicate", []GuardEvidence{proof, proof}, false},
+		{"changed output", []GuardEvidence{func() GuardEvidence { value := proof; value.OutputSHA256 = strings.Repeat("c", 64); return value }()}, false},
+		{"stale bundle", []GuardEvidence{func() GuardEvidence { value := proof; value.BundleID = decisionRequestID; return value }()}, false},
+		{"wrong handler", []GuardEvidence{func() GuardEvidence { value := proof; value.HandlerVersion = strings.Repeat("d", 64); return value }()}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request.GuardEvidence = test.evidence
+			decision, err := syncer.Evaluate(request)
+			if err != nil || (decision.Outcome == "allow") != test.allowed {
+				t.Fatalf("processing bypass: %+v %v", decision, err)
+			}
+		})
+	}
+	request.GuardEvidence = []GuardEvidence{proof}
+	signed := signedCall(t, syncer, request, "processing-attempt")
+	if err := syncer.verifyIdentityProof(signed, "processing-attempt"); err != nil {
+		t.Fatal(err)
+	}
+	signed.GuardEvidence[0].InputSHA256 = strings.Repeat("e", 64)
+	if syncer.verifyIdentityProof(signed, "processing-attempt") == nil {
+		t.Fatal("changed provenance kept a valid signature")
+	}
+	request.GuardEvidence = []GuardEvidence{proof}
+	callIdentity, _ := observeEffectInputBytes(request)
+	request.Phase = "tool_result"
+	request.Result = json.RawMessage(`{"text":"safe"}`)
+	resultProof := proof
+	resultProof.Phase = "tool_result"
+	resultProof.Target = GuardTarget{Root: "result", Path: []string{"text"}}
+	request.GuardEvidence = append(request.GuardEvidence, resultProof)
+	resultIdentity, _ := observeEffectInputBytes(request)
+	if !bytes.Equal(callIdentity, resultIdentity) {
+		t.Fatal("result processing changed the business-effect identity")
+	}
+	request.GuardEvidence[0].InputSHA256 = strings.Repeat("f", 64)
+	changedIdentity, _ := observeEffectInputBytes(request)
+	if bytes.Equal(callIdentity, changedIdentity) {
+		t.Fatal("different call processing reused the business-effect identity")
+	}
+}
+
+func TestGuardRequirementReadDoesNotAuthorizeOrMutateState(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{policy}, "enforce")
+	before, _ := json.Marshal(syncer.state)
+	request := httptest.NewRequest(http.MethodGet, "/guard-requirements?operationVersionId="+decisionOperationID+"&phase=tool_call", nil)
+	request.Header.Set("Authorization", "Bearer adapter-token")
+	response := httptest.NewRecorder()
+	GuardRequirementsHandler(syncer, "adapter-token").ServeHTTP(response, request)
+	var plan GuardPlan
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &plan) != nil || plan.Coverage != "evaluated" || len(plan.Requirements) != 0 || plan.BundleID == nil {
+		t.Fatalf("invalid plan: %s", response.Body.String())
+	}
+	after, _ := json.Marshal(syncer.state)
+	if !bytes.Equal(before, after) {
+		t.Fatal("read changed persistent sidecar state")
+	}
+	if _, err := os.Stat(syncer.options.StateFile); !os.IsNotExist(err) {
+		t.Fatal("planning wrote a state file")
+	}
+	request.Header.Set("Authorization", "Bearer wrong")
+	response = httptest.NewRecorder()
+	GuardRequirementsHandler(syncer, "adapter-token").ServeHTTP(response, request)
+	if response.Code != 401 {
+		t.Fatal("planning accepted an invalid adapter token")
+	}
+}
+
+func decisionCondition(comparison string, value any) map[string]any {
+	return map[string]any{"kind": "compare",
+		"left":       map[string]any{"root": "arguments", "path": []string{"amount"}},
+		"comparison": comparison,
+		"right":      map[string]any{"kind": "literal", "value": value}}
+}
+
+func decisionRail(id, version, kind string, rules []map[string]any) map[string]any {
+	return map[string]any{
+		"railId": id, "versionId": version, "operationVersionId": decisionOperationID,
+		"kind": kind, "operationContract": map[string]any{"requiredCoverage": []string{"tool_call"}},
+		"content": map[string]any{"formatVersion": 2, "rules": rules},
+	}
+}
+
+func decisionSynchronizer(t *testing.T, rails []map[string]any) *Synchronizer {
+	return decisionSynchronizerMode(t, rails, "observe")
+}
+
+func decisionSynchronizerMode(t *testing.T, rails []map[string]any, mode string) *Synchronizer {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := sha256.Sum256(der)
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	manifest := map[string]any{
+		"formatVersion": 1, "bundleId": bundleID,
+		"organisationId": organisationID, "deploymentId": deploymentID,
+		"inventoryItemId": itemID, "inventoryRevisionId": revisionID,
+		"sequence": 1, "mode": mode,
+		"issuedAt":   now.Add(-time.Minute).Format("2006-01-02T15:04:05.000Z"),
+		"activeFrom": now.Add(-time.Minute).Format("2006-01-02T15:04:05.000Z"),
+		"expiresAt":  now.Add(time.Hour).Format("2006-01-02T15:04:05.000Z"),
+		"rails":      rails,
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Configuration{}
+	config.Deployment.OrganisationID = organisationID
+	config.Deployment.DeploymentID = deploymentID
+	config.Deployment.InventoryItemID = itemID
+	config.Deployment.InventoryRevision = revisionID
+	config.Deployment.Mode = mode
+	config.Deployment.Sequence = 1
+	config.Deployment.ActiveBundleID = pointer(bundleID)
+	config.Bundle = &SignedBundle{Payload: base64.RawURLEncoding.EncodeToString(payload),
+		KeyID: "test-key", Algorithm: "ECDSA_SHA_256",
+		Signature: base64.StdEncoding.EncodeToString(signature)}
+	config.Bundle.VerificationKey.Format = "spki-der"
+	config.Bundle.VerificationKey.Base64 = base64.StdEncoding.EncodeToString(der)
+	config.Bundle.VerificationKey.SHA256 = hex.EncodeToString(fingerprint[:])
+	stateDir := t.TempDir()
+	if err := os.Chmod(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return &Synchronizer{options: Options{OrganisationID: organisationID,
+		DeploymentID: deploymentID, TrustedPins: map[string]struct{}{config.Bundle.VerificationKey.SHA256: {}},
+		ExecutorPublicKey:  ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey),
+		ExecutorPublicKeys: []ed25519.PublicKey{ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey)},
+		StateFile:          filepath.Join(stateDir, "state.json"), Now: func() time.Time { return now }},
+		state: diskState{FormatVersion: 1, OrganisationID: organisationID,
+			DeploymentID: deploymentID, Floor: 1, Current: &config}}
+}
+
+func signedCall(t *testing.T, syncer *Synchronizer, request EvaluationRequest, actionKey string) EvaluationRequest {
+	return signedCallWithKey(t, syncer, request, actionKey,
+		ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)))
+}
+
+func signedCallWithKey(t *testing.T, syncer *Synchronizer, request EvaluationRequest,
+	actionKey string, privateKey ed25519.PrivateKey) EvaluationRequest {
+	t.Helper()
+	input, err := observeInputBytes(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(input)
+	now := syncer.options.Now().Unix()
+	request.IdentityProof = IdentityProof{IssuedAt: now, ExpiresAt: now + 30}
+	reviewDigest, err := reviewSummaryDigest(request.ReviewSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statement := identityStatement{Type: "authrail.observe.executor.v1",
+		OrganisationID: syncer.options.OrganisationID, DeploymentID: syncer.options.DeploymentID,
+		RequestID: request.RequestID, ActionKey: actionKey,
+		OperationVersionID: request.OperationVersionID, Phase: request.Phase,
+		InputSHA256: hex.EncodeToString(digest[:]), Attribution: request.Attribution,
+		ReviewSummarySHA256: reviewDigest,
+		IssuedAt:            now, ExpiresAt: now + 30}
+	message, err := json.Marshal(statement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.IdentityProof.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, message))
+	return request
+}
+
+func TestExecutorKeyOverlapReportsMatchingFingerprint(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	newSeed := make([]byte, ed25519.SeedSize)
+	newSeed[0] = 1
+	newPrivate := ed25519.NewKeyFromSeed(newSeed)
+	newPublic := newPrivate.Public().(ed25519.PublicKey)
+	oldPublic := syncer.options.ExecutorPublicKey
+	syncer.options.ExecutorPublicKeys = []ed25519.PublicKey{newPublic, oldPublic}
+	for _, candidate := range []struct {
+		private ed25519.PrivateKey
+		public  ed25519.PublicKey
+	}{{newPrivate, newPublic}, {ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), oldPublic}} {
+		request := signedCallWithKey(t, syncer, call(50), "invoice-123", candidate.private)
+		if err := syncer.verifyIdentityProof(request, "invoice-123"); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(candidate.public)
+		if syncer.identityVerification(request, "invoice-123").KeySHA256 != hex.EncodeToString(digest[:]) {
+			t.Fatal("sidecar reported the wrong key during overlap")
+		}
+	}
+}
+
+func call(amount int) EvaluationRequest {
+	args, _ := json.Marshal(map[string]any{"amount": amount})
+	return EvaluationRequest{FormatVersion: 1, RequestID: decisionRequestID,
+		OperationVersionID: decisionOperationID, Phase: "tool_call", Arguments: args,
+		Attribution: Attribution{PrincipalID: "staff_123", SessionID: "task_123",
+			PrincipalSource: "application_session", ResourceSource: "not_applicable"}}
+}
+
+func TestObserveIdentityCoverage(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "owner", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "resource", "path": []string{"id"}},
+				"comparison": "eq", "right": map[string]any{"kind": "field",
+					"field": map[string]any{"root": "arguments", "path": []string{"invoiceId"}}}},
+			"outcome": "allow"}})
+	policy["operationContract"].(map[string]any)["resourceIdentity"] = map[string]any{
+		"type": "invoice", "field": []string{"invoiceId"}}
+	syncer := decisionSynchronizer(t, []map[string]any{policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"invoiceId":"invoice_123"}`)
+	resource := "invoice_123"
+	request.Attribution.ResourceID = &resource
+	request.Attribution.ResourceSource = "application_lookup"
+	matched, err := syncer.Evaluate(request)
+	if err != nil || matched.Coverage != "evaluated" || matched.Outcome != "allow" {
+		t.Fatalf("resolved resource was not evaluated: %+v %v", matched, err)
+	}
+	request.Attribution.PrincipalSource = ""
+	missing, err := syncer.Evaluate(request)
+	if err != nil || missing.Coverage != "unavailable" || missing.Outcome != "additional_context_required" {
+		t.Fatalf("missing caller was evaluated: %+v %v", missing, err)
+	}
+	request.Attribution.PrincipalSource = "application_session"
+	other := "invoice_456"
+	request.Attribution.ResourceID = &other
+	mismatch, err := syncer.Evaluate(request)
+	if err != nil || mismatch.Coverage != "unavailable" || mismatch.Outcome != "additional_context_required" {
+		t.Fatalf("mismatched resource was evaluated: %+v %v", mismatch, err)
+	}
+}
+
+func TestObserveCompositionKeepsGuardAndPolicyDistinct(t *testing.T) {
+	guard := decisionRail("00000000-0000-4000-8000-000000000010",
+		"00000000-0000-4000-8000-000000000011", "guard", []map[string]any{{
+			"id": "large", "phase": "tool_call", "when": decisionCondition("gt", 100),
+			"outcome": "deny", "reason": "Too large"}})
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "ordinary", "when": decisionCondition("lte", 100),
+			"outcome": "allow", "reason": "Ordinary amount"}})
+	syncer := decisionSynchronizer(t, []map[string]any{guard, policy})
+	denied, err := syncer.Evaluate(call(101))
+	if err != nil || denied.Outcome != "deny" || denied.Enforced || denied.Coverage != "evaluated" {
+		t.Fatalf("Guard denial lost in Observe: %+v %v", denied, err)
+	}
+	allowed, err := syncer.Evaluate(call(50))
+	if err != nil || allowed.Outcome != "allow" || allowed.Enforced || len(allowed.RailVersionIDs) != 2 {
+		t.Fatalf("Policy allowance did not compose: %+v %v", allowed, err)
+	}
+	guardOnly := decisionSynchronizer(t, []map[string]any{guard})
+	noBusinessAuthority, err := guardOnly.Evaluate(call(50))
+	if err != nil || noBusinessAuthority.Outcome != "indeterminate" {
+		t.Fatalf("Guard alone authorized a call: %+v %v", noBusinessAuthority, err)
+	}
+}
+
+func TestEnforceBundleReturnsDecisionWithoutClaimingAdapterAppliedIt(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{policy}, "enforce")
+	allowed, err := syncer.Evaluate(call(50))
+	if err != nil || allowed.Mode != "enforce" || allowed.Outcome != "allow" ||
+		allowed.Enforced || allowed.Coverage != "evaluated" {
+		t.Fatalf("Enforce decision was not bounded: %+v %v", allowed, err)
+	}
+	stopped, err := syncer.Evaluate(call(150))
+	if err != nil || stopped.Mode != "enforce" || stopped.Outcome == "allow" || stopped.Enforced {
+		t.Fatalf("unmatched Enforce call was allowed: %+v %v", stopped, err)
+	}
+}
+
+func TestObserveMissingFactsAndCoverage(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "trustedFact", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"invoiceStatus"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": "paid"}},
+			"outcome": "allow", "reason": "Invoice is paid"}})
+	syncer := decisionSynchronizer(t, []map[string]any{policy})
+	missing, err := syncer.Evaluate(call(50))
+	if err != nil || missing.Outcome != "additional_context_required" ||
+		len(missing.Unresolved) != 1 || missing.Unresolved[0].Reason != "unavailable" {
+		t.Fatalf("untrusted fact authorized a call: %+v %v", missing, err)
+	}
+	unknown := call(50)
+	unknown.OperationVersionID = "00000000-0000-4000-8000-000000000099"
+	uncovered, err := syncer.Evaluate(unknown)
+	if err != nil || uncovered.Coverage != "uncovered" || uncovered.Outcome != "indeterminate" {
+		t.Fatalf("unknown Operation was treated as covered: %+v %v", uncovered, err)
+	}
+	syncer.options.TrustedPins = map[string]struct{}{}
+	unavailable, err := syncer.Evaluate(call(50))
+	if err != nil || unavailable.Coverage != "unavailable" || unavailable.Outcome != "indeterminate" {
+		t.Fatalf("untrusted configuration was evaluated: %+v %v", unavailable, err)
+	}
+}
+
+func TestObserveUsesOnlyExactFreshSignedDataFacts(t *testing.T) {
+	sourceVersionID := "00000000-0000-4000-8000-000000000030"
+	dataVersionID := "00000000-0000-4000-8000-000000000031"
+	data := decisionRail("00000000-0000-4000-8000-000000000032", dataVersionID, "data", nil)
+	data["sourceContextVersionId"] = sourceVersionID
+	data["sourceContextContract"] = map[string]any{
+		"formatVersion": 1, "provider": "stripe", "lookup": "invoice.retrieve",
+		"providerAccountId": "acct_12345678", "queryField": map[string]any{
+			"root": "arguments", "path": []string{"invoiceId"}},
+		"factKey": "invoiceStatus", "resultField": "status",
+		"maxAgeSeconds": 60, "timeoutMs": 1000, "failure": "unavailable"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000033",
+		"00000000-0000-4000-8000-000000000034", "policy", []map[string]any{{
+			"id": "paidInvoice", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"invoiceStatus"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": "paid"}},
+			"outcome": "allow", "reason": "Invoice is paid"}})
+	policy["content"].(map[string]any)["factBindings"] = []map[string]any{{
+		"factKey": "invoiceStatus", "dataRailVersionId": dataVersionID}}
+	syncer := decisionSynchronizer(t, []map[string]any{data, policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"invoiceId":"in_1234"}`)
+	request.FactResolutions = []FactResolution{{SourceVersionID: sourceVersionID,
+		ProviderAccountID: "acct_12345678", Lookup: "invoice.retrieve", LookupKey: "in_1234",
+		AuthenticatedExecutor: true, Status: "ok", ObservedAt: syncer.options.Now().Add(-10 * time.Second).Format(time.RFC3339Nano),
+		Value: map[string]any{"status": "paid"}}}
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" || len(allowed.Facts) != 1 ||
+		allowed.Facts[0].Status != "trusted" || allowed.Facts[0].LookupKeySHA256 == "" ||
+		allowed.Facts[0].AgeSeconds != 10 {
+		t.Fatalf("fresh exact fact was not used: %+v %v", allowed, err)
+	}
+	for name, change := range map[string]func(*EvaluationRequest){
+		"wrong account": func(value *EvaluationRequest) { value.FactResolutions[0].ProviderAccountID = "acct_87654321" },
+		"wrong key":     func(value *EvaluationRequest) { value.FactResolutions[0].LookupKey = "in_other" },
+		"stale": func(value *EvaluationRequest) {
+			value.FactResolutions[0].ObservedAt = syncer.options.Now().Add(-time.Hour).Format(time.RFC3339Nano)
+		},
+		"unavailable": func(value *EvaluationRequest) { value.FactResolutions[0].Status = "unavailable" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := request
+			changed.FactResolutions = append([]FactResolution(nil), request.FactResolutions...)
+			change(&changed)
+			response, err := syncer.Evaluate(changed)
+			if err != nil || response.Outcome != "additional_context_required" ||
+				len(response.Facts) != 1 || response.Facts[0].Status == "trusted" ||
+				len(response.Unresolved) != 1 {
+				t.Fatalf("uncertain fact allowed: %+v %v", response, err)
+			}
+		})
+	}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	signed.FactResolutions[0].ProviderAccountID = "acct_87654321"
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("changed fact passed application signature")
+	}
+}
+
+func TestCustomerFactKeepsReviewedSourceAndAccount(t *testing.T) {
+	dataVersionID := "00000000-0000-4000-8000-000000000041"
+	data := decisionRail("00000000-0000-4000-8000-000000000042", dataVersionID, "data", nil)
+	data["sourceContextVersionId"] = "00000000-0000-4000-8000-000000000040"
+	data["sourceContextContract"] = map[string]any{
+		"formatVersion": 4, "kind": "customer_api", "sourceIdentity": "billing.production",
+		"accountBoundary": "tenant_123", "lookup": "invoice.read",
+		"queryField": map[string]any{"root": "arguments", "path": []string{"invoiceId"}},
+		"factKey":    "invoicePaid", "resultPath": []string{"invoice", "paid"},
+		"valueType": "boolean", "maxAgeSeconds": 60, "timeoutMs": 1000, "failure": "unavailable"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000043",
+		"00000000-0000-4000-8000-000000000044", "policy", []map[string]any{{
+			"id": "paidInvoice", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"invoicePaid"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": true}},
+			"outcome": "allow", "reason": "Invoice is paid"}})
+	policy["content"].(map[string]any)["factBindings"] = []map[string]any{{
+		"factKey": "invoicePaid", "dataRailVersionId": dataVersionID}}
+	syncer := decisionSynchronizer(t, []map[string]any{data, policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"invoiceId":"invoice_123"}`)
+	request.FactResolutions = []FactResolution{{SourceVersionID: "00000000-0000-4000-8000-000000000040",
+		SourceIdentity: "billing.production", AccountBoundary: "tenant_123", Lookup: "invoice.read",
+		LookupKey: "invoice_123", AuthenticatedExecutor: true, Status: "ok",
+		ObservedAt: syncer.options.Now().Add(-time.Second).Format(time.RFC3339Nano),
+		Value:      map[string]any{"invoice": map[string]any{"paid": true}}}}
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" || allowed.Facts[0].Status != "trusted" {
+		t.Fatalf("customer fact was not used: %+v %v", allowed, err)
+	}
+	request.FactResolutions[0].AccountBoundary = "tenant_456"
+	untrusted, err := syncer.Evaluate(request)
+	if err != nil || untrusted.Outcome != "additional_context_required" ||
+		untrusted.Facts[0].Status != "untrusted" {
+		t.Fatalf("cross-account customer fact was used: %+v %v", untrusted, err)
+	}
+}
+
+func TestNumericFactSignatureSurvivesHTTPJSON(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	request := call(50)
+	request.FactResolutions = []FactResolution{{SourceVersionID: "00000000-0000-4000-8000-000000000040",
+		Lookup: "invoice.read", LookupKey: "invoice_123", AuthenticatedExecutor: true,
+		Status: "ok", ObservedAt: syncer.options.Now().Format(time.RFC3339Nano),
+		Value: map[string]any{"balance": int64(9007199254740993)}}}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	body, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var received EvaluationRequest
+	if err := decoder.Decode(&received); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.verifyIdentityProof(received, "invoice-123"); err != nil {
+		t.Fatalf("numeric fact lost its signed wire representation: %v", err)
+	}
+	received.FactResolutions[0].Value["balance"] = json.Number("9007199254740994")
+	if syncer.verifyIdentityProof(received, "invoice-123") == nil {
+		t.Fatal("changed numeric fact passed the signature")
+	}
+}
+
+func TestPriorReadRequiresExactSignedSessionHistory(t *testing.T) {
+	readVersionID := "00000000-0000-4000-8000-000000000070"
+	guard := decisionRail("00000000-0000-4000-8000-000000000071",
+		"00000000-0000-4000-8000-000000000072", "guard", []map[string]any{{
+			"id": "privateRead", "kind": "prior_read", "phase": "tool_call",
+			"sourceOperationVersionId": readVersionID, "outcome": "deny"}})
+	guard["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "trajectory"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000073",
+		"00000000-0000-4000-8000-000000000074", "policy", []map[string]any{{
+			"id": "ordinaryAllow", "when": decisionCondition("gt", 0), "outcome": "allow"}})
+	readRail := decisionRail("00000000-0000-4000-8000-000000000075",
+		"00000000-0000-4000-8000-000000000076", "guard", []map[string]any{{
+			"id": "readBoundary", "phase": "tool_result", "when": decisionCondition("gt", 0), "outcome": "allow"}})
+	readRail["operationVersionId"] = readVersionID
+	readRail["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "tool_result"}
+	readRail["operationContract"].(map[string]any)["expectedEffects"] = []map[string]any{{"kind": "read"}}
+	syncer := decisionSynchronizer(t, []map[string]any{guard, policy, readRail})
+	request := call(50)
+	missing, err := syncer.Evaluate(request)
+	if err != nil || missing.Outcome != "additional_context_required" ||
+		len(missing.Unresolved) != 1 || missing.Unresolved[0].Root != "trajectory" {
+		t.Fatalf("missing history allowed the operation: %+v %v", missing, err)
+	}
+	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
+		Complete: true, PriorReadOperationVersionIDs: []string{readVersionID}}
+	request.Trajectory.verified = true
+	denied, err := syncer.Evaluate(request)
+	if err != nil || denied.Outcome != "deny" || len(denied.MatchedRuleIDs) != 2 {
+		t.Fatalf("exact prior read did not dominate allow: %+v %v", denied, err)
+	}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	signed.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
+		Complete: true, PriorReadOperationVersionIDs: []string{}}
+	signed.Trajectory.verified = true
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("changed session history passed the signature")
+	}
+	request.Trajectory = signed.Trajectory
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" {
+		t.Fatalf("complete empty history did not clear the guard: %+v %v", allowed, err)
+	}
+	request.Trajectory.SessionID = "different_session"
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("cross-session history was accepted")
+	}
+	request.Trajectory.SessionID = request.Attribution.SessionID
+	request.Trajectory.Complete = false
+	incomplete, err := syncer.Evaluate(request)
+	if err != nil || incomplete.Outcome != "additional_context_required" {
+		t.Fatalf("incomplete history cleared the guard: %+v %v", incomplete, err)
+	}
+	request.Trajectory.Complete = true
+	request.Trajectory.PriorReadOperationVersionIDs = []string{readVersionID, readVersionID}
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("duplicate prior read versions were accepted")
+	}
+	request.Trajectory.PriorReadOperationVersionIDs = []string{"not-a-version"}
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("malformed prior read version was accepted")
+	}
+	withoutReadCoverage := decisionSynchronizer(t, []map[string]any{guard, policy})
+	request.Trajectory.PriorReadOperationVersionIDs = []string{readVersionID}
+	uncovered, err := withoutReadCoverage.Evaluate(request)
+	if err != nil || uncovered.Outcome != "additional_context_required" ||
+		len(uncovered.Unresolved) != 1 || uncovered.Unresolved[0].Reason != "unavailable" {
+		t.Fatalf("uncovered source read cleared the guard: %+v %v", uncovered, err)
+	}
+}
+
+func TestReviewedTrajectoryFieldParticipatesInGuardDecision(t *testing.T) {
+	guard := decisionRail("00000000-0000-4000-8000-000000000081",
+		"00000000-0000-4000-8000-000000000082", "guard", []map[string]any{{
+			"id": "sensitiveHistory", "phase": "tool_call", "when": map[string]any{
+				"kind": "compare", "left": map[string]any{"root": "trajectory", "path": []string{"sensitiveDataSeen"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": true}},
+			"outcome": "deny"}})
+	policy := decisionRail("00000000-0000-4000-8000-000000000083",
+		"00000000-0000-4000-8000-000000000084", "policy", []map[string]any{{
+			"id": "ordinaryAllow", "when": decisionCondition("gt", 0), "outcome": "allow"}})
+	for _, rail := range []map[string]any{guard, policy} {
+		rail["operationContract"].(map[string]any)["requiredCoverage"] = []string{"tool_call", "trajectory"}
+		rail["operationContract"].(map[string]any)["availableFields"] = []map[string]any{{
+			"root": "trajectory", "path": []string{"sensitiveDataSeen"}, "type": "boolean"}}
+	}
+	syncer := decisionSynchronizer(t, []map[string]any{guard, policy})
+	request := call(50)
+	missing, err := syncer.Evaluate(request)
+	if err != nil || missing.Outcome != "additional_context_required" {
+		t.Fatalf("missing trajectory field allowed: %+v %v", missing, err)
+	}
+	request.Trajectory = &TrajectorySnapshot{SessionID: request.Attribution.SessionID,
+		Complete: true, Values: map[string]any{"sensitiveDataSeen": true}}
+	request.Trajectory.verified = true
+	denied, err := syncer.Evaluate(request)
+	if err != nil || denied.Outcome != "deny" {
+		t.Fatalf("reviewed sensitive history did not deny: %+v %v", denied, err)
+	}
+	request.Trajectory.Values["sensitiveDataSeen"] = false
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" {
+		t.Fatalf("reviewed clear history did not allow: %+v %v", allowed, err)
+	}
+	request.Trajectory.Values["extra"] = true
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("unreviewed trajectory field was accepted")
+	}
+	delete(request.Trajectory.Values, "extra")
+	request.Trajectory.Values["sensitiveDataSeen"] = "false"
+	if _, err := syncer.Evaluate(request); err == nil {
+		t.Fatal("wrong trajectory field type was accepted")
+	}
+}
+
+func TestLocalEvaluationEndpointRequiresAdapterToken(t *testing.T) {
+	guard := decisionRail("00000000-0000-4000-8000-000000000010",
+		"00000000-0000-4000-8000-000000000011", "guard", []map[string]any{{
+			"id": "large", "phase": "tool_call", "when": decisionCondition("gt", 100),
+			"outcome": "deny", "reason": "Too large"}})
+	syncer := decisionSynchronizer(t, []map[string]any{guard})
+	handler := EvaluationHandler(syncer,
+		"abcdefghijklmnopqrstuvwxyz012345")
+	body, _ := json.Marshal(signedCall(t, syncer, call(101), "invoice-123"))
+	request := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, request)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token: %d", unauthorized.Code)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	missingKey := httptest.NewRecorder()
+	handler.ServeHTTP(missingKey, request)
+	if missingKey.Code != http.StatusBadRequest {
+		t.Fatalf("missing action key: %d", missingKey.Code)
+	}
+	unsigned, _ := json.Marshal(call(101))
+	request = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(unsigned))
+	request.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	request.Header.Set("Idempotency-Key", "invoice-123")
+	missingProof := httptest.NewRecorder()
+	handler.ServeHTTP(missingProof, request)
+	if missingProof.Code != http.StatusUnauthorized {
+		t.Fatalf("missing executor proof: %d", missingProof.Code)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz012345")
+	request.Header.Set("Idempotency-Key", "invoice-123")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid adapter failed: %d", response.Code)
+	}
+	var evaluation Evaluation
+	if err := json.Unmarshal(response.Body.Bytes(), &evaluation); err != nil ||
+		evaluation.Outcome != "deny" || evaluation.Enforced {
+		t.Fatalf("bad Observe response: %+v %v", evaluation, err)
+	}
+	malformed := call(101)
+	malformed.Arguments = json.RawMessage(`{"amount":101} {"amount":1}`)
+	if _, err := decisionSynchronizer(t, []map[string]any{guard}).Evaluate(malformed); err == nil {
+		t.Fatal("malformed action accepted")
+	}
+}
+
+func TestExecutorProofRejectsSpoofedIdentityAndReplay(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	signed := signedCall(t, syncer, call(50), "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	changed := signed
+	changed.Attribution.PrincipalID = "other_staff"
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed principal passed executor proof")
+	}
+	changed = signed
+	changed.Attribution.PrincipalSource = "service_identity"
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed caller source passed executor proof")
+	}
+	changed = signed
+	changed.Arguments = json.RawMessage(`{"amount":500}`)
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed input passed executor proof")
+	}
+	changed = signed
+	changed.Phase = "tool_result"
+	changed.Result = json.RawMessage(`{"status":"done"}`)
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed phase passed executor proof")
+	}
+	if syncer.verifyIdentityProof(signed, "different-action") == nil {
+		t.Fatal("changed action key passed executor proof")
+	}
+	syncer.options.DeploymentID = "00000000-0000-4000-8000-000000000099"
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("different deployment accepted proof")
+	}
+	syncer.options.DeploymentID = deploymentID
+	syncer.options.Now = func() time.Time { return time.Unix(signed.IdentityProof.ExpiresAt, 0) }
+	if syncer.verifyIdentityProof(signed, "invoice-123") == nil {
+		t.Fatal("expired proof was accepted")
+	}
+}
+
+func TestLoadExecutorPublicKeyRequiresEd25519PEM(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "executor.pub")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadExecutorPublicKey(path)
+	if err != nil || !bytes.Equal(loaded, key) {
+		t.Fatalf("valid executor public key rejected: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("not a key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadExecutorPublicKey(path); err == nil {
+		t.Fatal("invalid executor public key accepted")
+	}
+	syncer := decisionSynchronizer(t, nil)
+	digest := sha256.Sum256(syncer.options.ExecutorPublicKey)
+	if syncer.Snapshot().ExecutorKeySHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatal("sidecar health hid or changed the configured executor key fingerprint")
+	}
+}
+
+func TestObserveApprovalAndResultCoverage(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "review", "when": decisionCondition("gt", 100),
+			"outcome": "approval_required", "reason": "Review needed"}})
+	policy["operationContract"] = map[string]any{"requiredCoverage": []string{"tool_call", "tool_result"}}
+	syncer := decisionSynchronizer(t, []map[string]any{policy})
+	approval, err := syncer.Evaluate(call(101))
+	if err != nil || approval.Outcome != "approval_required" || approval.Enforced {
+		t.Fatalf("Observe approval was misrepresented: %+v %v", approval, err)
+	}
+	result := call(101)
+	result.Phase = "tool_result"
+	result.Result = json.RawMessage(`{"status":"ok"}`)
+	observed, err := syncer.Evaluate(result)
+	if err != nil || observed.Outcome != "approval_required" || observed.Coverage != "evaluated" {
+		t.Fatalf("result hook was not evaluated: %+v %v", observed, err)
+	}
+	result.Result = nil
+	if _, err := syncer.Evaluate(result); err == nil {
+		t.Fatal("result hook accepted no result")
+	}
+}
+
+func TestContextualExtractionCannotReturnAnUnreviewedDecision(t *testing.T) {
+	sourceVersionID := "00000000-0000-4000-8000-000000000130"
+	dataVersionID := "00000000-0000-4000-8000-000000000131"
+	data := decisionRail("00000000-0000-4000-8000-000000000132", dataVersionID, "data", nil)
+	data["sourceContextVersionId"] = sourceVersionID
+	data["sourceContextContract"] = map[string]any{
+		"formatVersion": 5, "kind": "extraction", "sourceIdentity": "support.messages",
+		"accountBoundary": "tenant_123", "lookup": "message.read",
+		"queryField": map[string]any{"root": "arguments", "path": []string{"messageId"}},
+		"factKey":    "sensitive", "resultPath": []string{"sensitive"}, "valueType": "boolean",
+		"modelId": "model.v1", "modelConfigSha256": strings.Repeat("a", 64),
+		"promptVersion": "prompt.v1", "maxInputBytes": 4096, "maxOutputBytes": 256,
+		"maxAgeSeconds": 60, "timeoutMs": 2000, "failure": "unavailable"}
+	policy := decisionRail("00000000-0000-4000-8000-000000000133",
+		"00000000-0000-4000-8000-000000000134", "policy", []map[string]any{{
+			"id": "ordinary", "when": map[string]any{"kind": "compare",
+				"left":       map[string]any{"root": "facts", "path": []string{"sensitive"}},
+				"comparison": "eq", "right": map[string]any{"kind": "literal", "value": false}},
+			"outcome": "allow"}})
+	policy["content"].(map[string]any)["factBindings"] = []map[string]any{{
+		"factKey": "sensitive", "dataRailVersionId": dataVersionID}}
+	syncer := decisionSynchronizer(t, []map[string]any{data, policy})
+	request := call(50)
+	request.Arguments = json.RawMessage(`{"amount":50,"messageId":"msg_123"}`)
+	request.FactResolutions = []FactResolution{{SourceVersionID: sourceVersionID,
+		SourceIdentity: "support.messages", AccountBoundary: "tenant_123",
+		Lookup: "message.read", LookupKey: "msg_123", AuthenticatedExecutor: true,
+		Status: "ok", ObservedAt: syncer.options.Now().Add(-20 * time.Second).Format(time.RFC3339Nano),
+		Value: map[string]any{"sensitive": false}, Extraction: &ExtractionProvenance{
+			SourceSHA256: strings.Repeat("b", 64), SourceBytes: 120,
+			SourceLocation: "message:msg_123", ModelID: "model.v1",
+			ModelConfigSHA256: strings.Repeat("a", 64), PromptVersion: "prompt.v1",
+			ExtractedAt: syncer.options.Now().Add(-10 * time.Second).Format(time.RFC3339Nano)}}}
+	allowed, err := syncer.Evaluate(request)
+	if err != nil || allowed.Outcome != "allow" || allowed.Facts[0].Status != "trusted" ||
+		allowed.Facts[0].Extraction == nil ||
+		allowed.Facts[0].Extraction.SourceLocation != "message:msg_123" {
+		t.Fatalf("reviewed assertion not evaluated: %+v %v", allowed, err)
+	}
+	signed := signedCall(t, syncer, request, "invoice-123")
+	if err := syncer.verifyIdentityProof(signed, "invoice-123"); err != nil {
+		t.Fatal(err)
+	}
+	changed := signed
+	changed.FactResolutions = append([]FactResolution(nil), signed.FactResolutions...)
+	provenance := *signed.FactResolutions[0].Extraction
+	changed.FactResolutions[0].Extraction = &provenance
+	changed.FactResolutions[0].Extraction.SourceLocation = "message:changed"
+	if syncer.verifyIdentityProof(changed, "invoice-123") == nil {
+		t.Fatal("changed extraction location passed the signature")
+	}
+	request.FactResolutions[0].Status = "uncertain"
+	uncertain, err := syncer.Evaluate(request)
+	if err != nil || uncertain.Outcome != "additional_context_required" ||
+		uncertain.Facts[0].Uncertainty != "uncertain" {
+		t.Fatalf("uncertain assertion authorized: %+v %v", uncertain, err)
+	}
+	request.FactResolutions[0].Status = "ok"
+	request.FactResolutions[0].Extraction.ModelID = "different"
+	untrusted, err := syncer.Evaluate(request)
+	if err != nil || untrusted.Outcome != "additional_context_required" {
+		t.Fatalf("changed model authorized: %+v %v", untrusted, err)
+	}
+	request.FactResolutions[0].Extraction.ModelID = "model.v1"
+	request.FactResolutions[0].ObservedAt = syncer.options.Now().Add(-2 * time.Minute).Format(time.RFC3339Nano)
+	stale, err := syncer.Evaluate(request)
+	if err != nil || stale.Outcome != "additional_context_required" || stale.Facts[0].Status != "stale" {
+		t.Fatalf("stale reading authorized: %+v %v", stale, err)
+	}
+	request.FactResolutions[0].ObservedAt = syncer.options.Now().Add(-20 * time.Second).Format(time.RFC3339Nano)
+	request.FactResolutions[0].Value["sensitive"] = "false"
+	wrongType, err := syncer.Evaluate(request)
+	if err != nil || wrongType.Outcome != "additional_context_required" ||
+		wrongType.Facts[0].Status != "untrusted" {
+		t.Fatalf("wrongly typed reading authorized: %+v %v", wrongType, err)
+	}
+}

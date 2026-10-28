@@ -1,0 +1,5 @@
+# Validation-only trust overlay. The binary stays pinned to the upstream image;
+# the added file contains public certificates, never executor private keys.
+ARG SUPERVISOR_IMAGE=ghcr.io/nvidia/openshell/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b
+FROM ${SUPERVISOR_IMAGE}
+COPY supervisor-ca-bundle.crt /etc/ssl/certs/ca-certificates.crt

@@ -1,0 +1,216 @@
+# AuthRail Sidecar
+
+The AuthRail Sidecar is a small decision process that runs beside your AI
+application for **one Runtime deployment**. When an agent requests a tool
+action, your application's adapter sends the proposed call to the sidecar
+before the protected function runs. The sidecar evaluates the signed Rails
+published in AuthRail and returns a decision. The adapter also checks the
+function's result before giving it back to the agent.
+
+For example, if an agent asks to refund a payment, your application keeps the
+Stripe credential and performs the refund. The sidecar decides whether that
+specific call is allowed under the active Rails; it does not hold the Stripe
+key or issue the refund. It reports bounded decision records to AuthRail while
+the action inputs, provider credentials, and business workflow stay with your
+application.
+
+In **Observe**, the decision is advisory and the application may still run the
+function. In **Enforce**, the protected adapter must stop unless a covered call
+is explicitly allowed, then check the result before releasing it. The
+sidecar returns decisions; only an adapter at the real execution boundary can
+apply them.
+
+## How it fits
+
+```text
+AuthRail ── signed Rails ──▶ sidecar ◀── local adapter ◀── protected application
+                               │                                 │
+                               └── decision report ──▶ AuthRail   └── tool/provider
+```
+
+The sidecar and an adapter work together: the sidecar owns local decisions and
+report delivery; the adapter places checks at the application's actual action
+boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node)
+or [Go SDK](https://github.com/AuthRail/authrail-sdk-go), or implement the same
+local decision protocol. The sidecar is not a hosted decision endpoint or a
+shared service for unrelated deployments.
+The Node and Go SDKs have Enforce wrappers. Both SDKs' Observe wrappers remain
+advisory. Review the installed adapter and bypass paths before switching modes.
+
+## Before you start
+
+1. In AuthRail, review the action and its Rails, create an Observe deployment,
+   and obtain its deployment credential and trusted signing-key fingerprint.
+2. Generate an Ed25519 key pair for the protected application. Register the
+   public key on the deployment page. Give the sidecar only that public key;
+   keep the private key in the application.
+3. Create a separate random adapter token of at least 32 characters. It lets
+   the application call the sidecar locally; it is not the deployment credential.
+4. Choose a private, persistent state path for each sidecar instance. Its
+   adjacent report queue, recording-gap history, and trajectory ledger must
+   survive restarts.
+
+Do not give deployment, adapter, operator, or provider credentials to the
+agent. If it can bypass the protected executor, treat the deployment as
+advisory even when the sidecar is healthy.
+
+## Install with Docker (recommended)
+
+Use the [Docker setup guide](docker/README.md) to build the non-root image,
+mount private credentials and persistent state, and connect the protected
+application through a shared local network namespace. The decision listener
+stays on loopback; do not publish its port. Docker setup does not change the
+signed protocol, deployment identity or adapter responsibility.
+
+## Native build and run
+
+Go 1.26 or newer is required to build from source:
+
+```bash
+go build -o authrail-sidecar ./cmd/authrail-sidecar
+```
+
+Create a local archive with `sh scripts/package.sh VERSION OUTPUT_DIRECTORY`.
+It contains the current-platform binary, README, protocol and compatibility guides,
+`conformance/v1` fixtures, license, and format manifest, with an adjacent SHA-256 checksum. Verify the checksum
+before unpacking and use the binary in the archive. This recipe does not
+publish an official release. Install a pinned sidecar revision and pinned SDK
+version together; there is no published compatibility matrix or prebuilt
+release artifact yet. The current wire format uses
+`formatVersion: 1` for signed Rail bundles and local evaluation requests.
+The Node and Go adapters also use the local permit and receipt endpoints.
+Do not infer compatibility from matching format numbers alone: run the
+versioned conformance fixtures in `conformance/v1` and verify the exact
+deployment's signed bundle and coverage before Enforce.
+
+Configure the process before starting it:
+
+| Variable | Purpose |
+| --- | --- |
+| `AUTHRAIL_CONTROL_PLANE_URL` | AuthRail API address. |
+| `AUTHRAIL_DEPLOYMENT_TOKEN` | Credential for this exact deployment. |
+| `AUTHRAIL_ORGANISATION_ID` | Organisation ID. |
+| `AUTHRAIL_DEPLOYMENT_ID` | Deployment ID. |
+| `AUTHRAIL_TRUSTED_KEY_SHA256` | Trusted signing-key fingerprint obtained through setup, not from a downloaded bundle. |
+| `AUTHRAIL_STATE_FILE` | Private persistent state-file path, unique per instance. |
+| `AUTHRAIL_ADAPTER_TOKEN` | Separate local adapter token for `/evaluate`. |
+| `AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE` | PEM public key of the protected application. |
+| `AUTHRAIL_OPERATOR_TOKEN` | Optional separate token to enable local recording-gap review. |
+| `AUTHRAIL_OTLP_ENDPOINT` | Optional OTLP/HTTP Collector base URL, for example `http://127.0.0.1:4318`. Use HTTPS for a remote Collector; omit it to disable export. |
+
+`AUTHRAIL_PREVIOUS_EXECUTOR_PUBLIC_KEY_FILE` accepts the previous application
+public key during a bounded rotation overlap. `AUTHRAIL_HEALTH_ADDR` changes
+the loopback listener from `127.0.0.1:7078`; `AUTHRAIL_SYNC_INTERVAL` changes
+the five-second Rail sync interval. Keep the listener on loopback.
+
+The sidecar checks the signed bundle's organisation, deployment, sequence,
+activation time, expiry, and signature before using it. An invalid private
+state file stops startup rather than resetting rollback protection.
+
+For an upgrade, stop only the instance being upgraded under your own change
+process, preserve `AUTHRAIL_STATE_FILE` and its adjacent `.observations`,
+recording-gap, and trajectory files as one private set, and install the new
+binary at the pinned revision. Use the same deployment ID, trusted key pins,
+adapter token, and public executor key. Check `/health` for the expected
+sequence, bundle validity, queue counts, and key fingerprints before routing
+protected calls. For rollback, restore the previous binary while keeping the
+newer state set; never restore an older state snapshot that would lower the
+accepted bundle sequence or erase queued reports. A binary unable to read
+that state must fail closed for Enforce and be resolved operationally, not
+started with a blank file. An isolated package smoke test unpacks the sidecar,
+starts it with a fresh private state path, restarts it, and rejects a lower
+configuration sequence. A packaged process restart on a real deployment
+remains a separate acceptance check.
+
+## Connect your application
+
+Use an AuthRail adapter at the protected function boundary. It sends a signed
+`tool_call` before the function and a signed `tool_result` after a successful
+result. Both phases carry the same stable action key. The local endpoint is
+`POST http://127.0.0.1:7078/evaluate`; use the adapter token as its Bearer
+credential. The [Node SDK](https://github.com/AuthRail/authrail-sdk-node) and
+[Go SDK](https://github.com/AuthRail/authrail-sdk-go) handle signing and the
+request format; install one in the protected application, not in the sidecar.
+
+The application must authenticate the caller and resolve any target resource
+before signing. A signature proves that its key asserted those references;
+it does not independently prove the person, resource, or business execution.
+The sidecar does not fetch provider facts or invoke a model. It evaluates
+reviewed, bounded context supplied by the protected application.
+
+## Check health and recording
+
+`GET http://127.0.0.1:7078/health` shows signed-bundle status, application-key
+fingerprints, queued or blocked report counts, and a process-local cumulative
+`telemetryFailures` count. That count includes dropped spans and failed OTLP
+exports; it does not prove Collector retention or adapter coverage. OTLP export
+uses bounded memory and a short deadline and cannot change a decision. An
+invalid exporter configuration disables export without stopping decisions.
+The sidecar sends a bounded deployment signal to AuthRail at startup and every
+30 seconds. Fresh health
+does not prove every action was intercepted.
+
+For a covered check, `recordingStatus` distinguishes:
+
+- `retained`: AuthRail saved the report and returned Action/certificate IDs.
+- `queued`: the private sidecar queue saved it for retry; AuthRail has not
+  retained it.
+- `unavailable`: neither retention nor local queue durability is established.
+
+An upload outage leaves a report queued when local storage works. A full or
+unwritable queue leaves a recording gap; it never turns Observe into a block.
+The Node Enforce adapter requires `retained` before proceeding, so an outage
+stops its protected path. A result-phase stop cannot undo a tool effect.
+Monitor the customer deployment's health and logs as well as local `/health`.
+
+For a retained approval wait, the protected adapter can send a fresh signed
+bounded `reviewSummary` on its Enforce call. The sidecar verifies its digest
+as part of the executor signature and forwards the summary for named human
+reviewers; it does not upload raw call arguments or results. Missing or invalid
+review context leaves the request unavailable. The protected adapter can send a
+fresh signed claim to local `POST /approval-permits/claim` with its adapter token. The
+sidecar forwards that claim with its deployment credential; the agent never
+receives that credential. The server consumes an approved request once and
+returns a short-lived permit. The sidecar never retries a claim after an
+uncertain response. A permit says the call may proceed; it does not prove the
+protected function ran.
+An authenticated adapter can send the same fresh signed claim to
+`POST /approval-permits/recover` to read a still-valid existing permit after
+a lost claim response. Recovery cannot create a permit or resume an already
+started attempt.
+
+The protected adapter sends a signed `started` receipt to local
+`POST /execution-receipts` before invoking the provider. The sidecar forwards
+it with the deployment credential and returns only a centrally retained
+acknowledgement. Completion and reconciliation use the same endpoint. The
+sidecar does not execute the operation, infer a provider result, or retry a
+business effect. If a completion report is lost, the application must check
+the provider with the original idempotency reference and reconcile the Action.
+Only an authenticated no-effect reconciliation permits a fresh signed call
+decision and another attempt under that Action. The protected adapter reuses
+the provider idempotency key and business arguments; facts and trajectory can
+be refreshed for the new decision. Any new approval is separate.
+The sidecar forwards the executor's assertion and cannot verify the provider.
+
+## Recover recording gaps
+
+During application-key rotation, keep the old public key available only while
+old reports drain. Check `pendingReports: 0` and `blockedReports: 0` on each
+instance before retiring it. A revoked key cannot be used to certify queued
+reports. An operator may inspect blocked metadata through the token-protected
+`/observations/gaps` endpoint and acknowledge an independently reviewed gap
+with a reason. That acknowledgement is local; it does not create an Action or
+certificate. Never clear the queue or trajectory ledger to make health appear
+good.
+
+## Project guides
+
+- [Architecture](ARCHITECTURE.md): trust boundaries, decision protocol, local
+  state, queue, and recovery invariants.
+- [Local protocol](PROTOCOL.md): raw HTTP shape, signed phases, effect receipts,
+  conformance, and coverage review.
+- [Compatibility](COMPATIBILITY.md): current source protocol and state formats,
+  component checks, and the limit of the unpublished release matrix.
+- [Contributing](CONTRIBUTING.md): build and test conventions.
+- [OpenShell protected executor](integrations/openshell/README.md): customer-owned
+  placement and source integration, with separate containment validation requirements.

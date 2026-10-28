@@ -1,0 +1,25 @@
+{
+  "host": "127.0.0.1",
+  "port": 7443,
+  "organisationId": "REPLACE_WITH_ORGANISATION_UUID",
+  "deploymentId": "REPLACE_WITH_DEPLOYMENT_UUID",
+  "operationVersionId": "REPLACE_WITH_REVIEWED_OPERATION_VERSION_UUID",
+  "principalId": "sandbox-service",
+  "sessionId": "REPLACE_WITH_REVIEWED_SESSION_ID",
+  "stateDirectory": "/private/authrail-executor-state",
+  "adapterTokenFile": "/private/runtime/adapter-token",
+  "executorPrivateKeyFile": "/private/runtime/executor-private.pem",
+  "sandboxRequestTokenFile": "/private/runtime/sandbox-request-token",
+  "journalKeyFile": "/private/runtime/journal-key-hex",
+  "tlsKeyFile": "/private/runtime/executor-tls-key.pem",
+  "tlsCertFile": "/private/runtime/executor-tls-chain.pem",
+  "containment": {
+    "cli": "/usr/local/bin/openshell",
+    "gateway": "REPLACE_WITH_OPERATOR_GATEWAY_NAME",
+    "workspace": "default",
+    "sandboxName": "REPLACE_WITH_SANDBOX_NAME",
+    "sandboxId": "REPLACE_WITH_IMMUTABLE_SANDBOX_ID",
+    "policyVersion": 1,
+    "policySha256": "REPLACE_WITH_REVIEWED_EFFECTIVE_POLICY_JSON_SHA256"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@authrail/openshell-protected-executor-example",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "dependencies": { "@authrail/sdk-node": "file:../../../authrail-sdk-node" }
+}
