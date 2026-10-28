@@ -1,0 +1,24 @@
+# Reviewed against NVIDIA/OpenShell v0.1.6. Replace the exact hostname and
+# executable path with the customer's reviewed executor and sandbox image.
+# This is containment, not an AuthRail business authorization policy.
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only: [/usr, /bin, /lib, /etc, /app, /dev/urandom]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: hard_requirement
+network_policies:
+  protected_executor:
+    name: authrail-protected-executor
+    endpoints:
+      - host: executor.example.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: POST
+              path: /execute
+    binaries:
+      - path: /usr/bin/curl

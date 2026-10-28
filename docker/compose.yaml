@@ -1,0 +1,40 @@
+# Run from this directory. Set configuration in the calling shell, never in Git.
+services:
+  sidecar:
+    image: ${AUTHRAIL_SIDECAR_IMAGE:-authrail-sidecar:development}
+    build:
+      context: ..
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 15s
+    environment:
+      AUTHRAIL_CONTROL_PLANE_URL: ${AUTHRAIL_CONTROL_PLANE_URL:?set the HTTPS API origin}
+      AUTHRAIL_ORGANISATION_ID: ${AUTHRAIL_ORGANISATION_ID:?set organisation ID}
+      AUTHRAIL_DEPLOYMENT_ID: ${AUTHRAIL_DEPLOYMENT_ID:?set deployment ID}
+      AUTHRAIL_TRUSTED_KEY_SHA256: ${AUTHRAIL_TRUSTED_KEY_SHA256:?set independently verified signing key pin}
+      AUTHRAIL_DEPLOYMENT_TOKEN_FILE: /run/secrets/deployment-token
+      AUTHRAIL_ADAPTER_TOKEN_FILE: /run/secrets/adapter-token
+      AUTHRAIL_EXECUTOR_PUBLIC_KEY_FILE: /run/secrets/executor-public.pem
+      AUTHRAIL_OTLP_ENDPOINT: ${AUTHRAIL_OTLP_ENDPOINT:-}
+    volumes:
+      - state:/var/lib/authrail
+    secrets:
+      - deployment-token
+      - adapter-token
+      - executor-public.pem
+    # No decision port is published. The protected executor joins this network
+    # namespace using network_mode: service:sidecar in its Compose service.
+
+volumes:
+  state:
+
+secrets:
+  deployment-token:
+    file: ${AUTHRAIL_DEPLOYMENT_TOKEN_PATH:?set deployment token file path}
+  adapter-token:
+    file: ${AUTHRAIL_ADAPTER_TOKEN_PATH:?set adapter token file path}
+  executor-public.pem:
+    file: ${AUTHRAIL_EXECUTOR_PUBLIC_KEY_PATH:?set executor public PEM path}

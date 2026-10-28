@@ -1,0 +1,5 @@
+node_modules/
+operator-settings.json
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

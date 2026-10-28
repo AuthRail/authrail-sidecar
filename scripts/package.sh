@@ -22,6 +22,13 @@ mkdir "$output/$name"
 cp "$repository/README.md" "$repository/PROTOCOL.md" "$repository/COMPATIBILITY.md" \
   "$repository/LICENSE" "$output/$name/"
 cp -R "$repository/conformance" "$output/$name/"
+mkdir "$output/$name/docker"
+cp "$repository/docker/README.md" "$output/$name/docker/README.md"
+mkdir -p "$output/$name/integrations/openshell"
+for guide_asset in README.md executor.mjs containment.mjs start.mjs example-config.mjs \
+  operator-settings.example.json package.json package-lock.json policy.yaml; do
+  cp "$repository/integrations/openshell/$guide_asset" "$output/$name/integrations/openshell/$guide_asset"
+done
 printf '{"version":"%s","os":"%s","arch":"%s","bundleFormat":1,"localProtocolFormat":1,"stateFormat":1}\n' \
   "$version" "$platform_os" "$platform_arch" > "$output/$name/manifest.json"
 (cd "$output" && tar -czf "$name.tar.gz" "$name")

@@ -54,7 +54,15 @@ Do not give deployment, adapter, operator, or provider credentials to the
 agent. If it can bypass the protected executor, treat the deployment as
 advisory even when the sidecar is healthy.
 
-## Build and run
+## Install with Docker (recommended)
+
+Use the [Docker setup guide](docker/README.md) to build the non-root image,
+mount private credentials and persistent state, and connect the protected
+application through a shared local network namespace. The decision listener
+stays on loopback; do not publish its port. Docker setup does not change the
+signed protocol, deployment identity or adapter responsibility.
+
+## Native build and run
 
 Go 1.26 or newer is required to build from source:
 
@@ -204,3 +212,5 @@ good.
 - [Compatibility](COMPATIBILITY.md): current source protocol and state formats,
   component checks, and the limit of the unpublished release matrix.
 - [Contributing](CONTRIBUTING.md): build and test conventions.
+- [OpenShell protected executor](integrations/openshell/README.md): customer-owned
+  placement and source integration, with separate containment validation requirements.
