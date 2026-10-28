@@ -1,9 +1,33 @@
 # Run the sidecar with Docker
 
-Docker is the recommended installation for a customer-operated sidecar. Build
-the image from a pinned, reviewed source revision; there is no published image
-or release compatibility matrix yet. Native archives remain supported through
-`scripts/package.sh` and the root README.
+Use Docker to build and run the AuthRail sidecar without installing Go on
+your computer. AuthRail holds the reviewed rules and history; the sidecar
+checks calls locally beside your protected application. Complete the
+[AuthRail deployment prerequisites](../README.md#before-you-start) first.
+
+You are building **a Docker image from source**, then starting a container
+from that image. Docker compiles the Go source inside a temporary build stage.
+You do not run `go build` on your machine or copy a native binary into Docker.
+There is no published AuthRail image for this setup yet; the tag below names
+an image you build locally, not one you pull from a registry.
+
+## 1. Get the source and build the image
+
+Install Git and Docker with the Compose plugin. On macOS/Windows, start Docker
+Desktop; on Linux, ensure Docker Engine is running. Then:
+
+```sh
+git clone https://github.com/AuthRail/authrail-sidecar.git
+cd authrail-sidecar
+docker build -t authrail-sidecar:development .
+```
+
+Run the rest of this guide from this repository directory. The trailing `.`
+tells Docker to use this checkout as the build context. The build downloads its
+Go builder image/modules and produces `authrail-sidecar:development` locally.
+It does not start a process, connect to your workspace, or publish the image.
+For a repeatable deployment, check out a reviewed commit before building.
+Native installation is an alternative in the [root README](../README.md#native-build-and-run).
 
 The image contains the decision binary, a small credential/health launcher and
 public CA certificates. It runs as UID/GID `10001:10001` without a shell. The
@@ -11,8 +35,10 @@ launcher replaces itself with the sidecar so SIGTERM reaches the process directl
 The Compose configuration uses a read-only root filesystem, no capabilities,
 and a 15-second stop grace period (the process allows five seconds for shutdown).
 
-## Prepare one deployment
+## 2. Prepare your AuthRail settings and private files
 
+Follow the root README's [credential preparation](../README.md#prepare-the-application-key-and-local-credentials)
+if you have not created the application key pair and local adapter token yet.
 Use an existing reviewed Observe deployment, its exact deployment credential,
 organisation/deployment IDs, independently verified signing-key fingerprint and
 the protected executor's registered Ed25519 public key. Keep the executor's
@@ -27,7 +53,15 @@ Do not make credentials world-readable to solve a mount-permission failure.
 Docker Desktop file sharing may map permissions differently; verify readability
 without printing the files. Never put credentials in build arguments or image layers.
 
-Set these shell variables to the paths and non-secret setup values:
+You need three files: the deployment credential from AuthRail, a separate
+random adapter token (at least 32 characters), and the registered executor public
+key. The executor's private key stays with your application. These files are
+created/provisioned by your operator; cloning this repository does not create
+them. Use absolute paths so Compose can mount the intended files.
+
+Set these shell variables to the paths and non-secret setup values. Replace
+all placeholders; the API origin comes from your AuthRail installation, and
+the IDs/fingerprint come from its deployment setup:
 
 ```sh
 export AUTHRAIL_CONTROL_PLANE_URL=https://your-authrail-api.example.com
@@ -37,9 +71,39 @@ export AUTHRAIL_TRUSTED_KEY_SHA256=YOUR_VERIFIED_SIGNING_KEY_FINGERPRINT
 export AUTHRAIL_DEPLOYMENT_TOKEN_PATH=/private/runtime/deployment-token
 export AUTHRAIL_ADAPTER_TOKEN_PATH=/private/runtime/adapter-token
 export AUTHRAIL_EXECUTOR_PUBLIC_KEY_PATH=/private/runtime/executor-public.pem
-docker compose -p authrail-runtime -f docker/compose.yaml up -d --build
+```
+
+## 3. Start the container and check readiness
+
+With the image built and the settings above exported in the same terminal:
+
+```sh
+docker compose -p authrail-runtime -f docker/compose.yaml up -d
+docker compose -p authrail-runtime -f docker/compose.yaml ps
 docker compose -p authrail-runtime -f docker/compose.yaml exec sidecar /usr/local/bin/authrail-container health
 ```
+
+`up -d` starts the local image in the background and creates the named state
+volume on first use. The last command produces no output and exits 0 when a
+valid signed bundle is loaded. If it exits 1 or Compose reports `unhealthy`,
+check the API address, selected Rails, credential files and signing-key pin.
+Inspect startup messages with:
+
+```sh
+docker compose -p authrail-runtime -f docker/compose.yaml logs --tail 50 sidecar
+```
+
+Keep credentials out of copied logs. To stop and later resume the same instance:
+
+```sh
+docker compose -p authrail-runtime -f docker/compose.yaml stop sidecar
+docker compose -p authrail-runtime -f docker/compose.yaml start sidecar
+```
+
+Keep the same project name and volume; never add `-v` to a removal command.
+To rebuild changed source and recreate the container deliberately, use
+`docker compose -p authrail-runtime -f docker/compose.yaml up -d --build`, then
+recreate any executor sharing its network namespace as explained below.
 
 Run these commands from the repository root. The placeholders must be replaced
 with actual setup values. The default image tag is `authrail-sidecar:development`;
@@ -80,7 +144,7 @@ credential in the agent or ordinary executor. Other configuration variables
 are described in the root README. Export `AUTHRAIL_OTLP_ENDPOINT` to an OTLP/HTTP
 Collector reachable from this container; telemetry failure cannot grant a call.
 
-## Put the protected application beside it
+## 4. Connect your protected application
 
 The sidecar deliberately binds **loopback only**, including in Docker. Publishing
 7078 or addressing `http://sidecar:7078` cannot make a separate container work.
