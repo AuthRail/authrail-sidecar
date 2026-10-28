@@ -41,8 +41,8 @@ AuthRail ── signed Rails ──▶ sidecar ◀── local adapter ◀──
 The sidecar and an adapter work together: the sidecar owns local decisions and
 report delivery; the adapter places checks at the application's actual action
 boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node)
-or [Go SDK](https://github.com/AuthRail/authrail-sdk-go), or implement the same
-local decision protocol. The sidecar is not a hosted decision endpoint or a
+or [Go SDK](https://github.com/AuthRail/authrail-sdk-go) to connect your
+application through the supported adapters. The sidecar is not a hosted decision endpoint or a
 shared service for unrelated deployments.
 The Node and Go SDKs have Enforce wrappers. Both SDKs' Observe wrappers remain
 advisory. Review the installed adapter and bypass paths before switching modes.
@@ -256,6 +256,33 @@ before signing. A signature proves that its key asserted those references;
 it does not independently prove the person, resource, or business execution.
 The sidecar does not fetch provider facts or invoke a model. It evaluates
 reviewed, bounded context supplied by the protected application.
+
+## Follow local logs
+
+The sidecar writes structured JSON events to stderr, including startup and
+service-error events. No Collector is required. A native foreground process
+shows them in its terminal; for the Docker setup, run:
+
+```sh
+docker compose -p authrail-runtime -f docker/compose.yaml logs --tail 50 --follow sidecar
+```
+
+`decision` records the call/result phase, mode, outcome and recording status.
+`check_unavailable` identifies a request whose required history could not be
+trusted, with the actual deployment mode and phase.
+`execution_report` describes an application-reported attempt and whether its
+report was retained or queued. `report_delivered` confirms later delivery of a
+queued report; it does not resume a held action. `request_completed` records a fixed SDK operation,
+HTTP status and elapsed time; HTTP success is not business permission.
+Validated request, Action and attempt IDs help you find the related AuthRail
+record. Arguments, source text, credentials and provider bodies are omitted.
+An executor-reported success is not independent verification of an effect.
+
+Logs are bounded, best-effort diagnostics. Slow or failed output can drop lines;
+`logDrops` in local health counts these losses. They do not replace durable
+Actions, receipts or report queues. Your operator owns output capture, rotation
+and retention. Optional OTLP exports traces and metrics to your Collector,
+independently of these process logs.
 
 ## Check health and recording
 
