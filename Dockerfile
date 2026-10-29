@@ -2,7 +2,9 @@
 ARG GO_IMAGE=golang:1.26-alpine
 ARG VERSION=development
 ARG REVISION=unknown
-FROM ${GO_IMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION
 ARG REVISION
 WORKDIR /src
@@ -11,8 +13,8 @@ RUN go mod download
 COPY cmd ./cmd
 COPY sidecar ./sidecar
 COPY docker/launcher ./docker/launcher
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${VERSION} -X main.revision=${REVISION}" -o /out/authrail-sidecar ./cmd/authrail-sidecar \
- && CGO_ENABLED=0 go build -trimpath -o /out/authrail-container ./docker/launcher \
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${VERSION} -X main.revision=${REVISION}" -o /out/authrail-sidecar ./cmd/authrail-sidecar \
+ && GOOS=${TARGETOS} GOARCH=${TARGETARCH} CGO_ENABLED=0 go build -trimpath -o /out/authrail-container ./docker/launcher \
  && mkdir -p /out/state/authrail \
  && chmod 0700 /out/state/authrail
 RUN case "$VERSION:$REVISION" in *[!A-Za-z0-9._:-]*) exit 1 ;; esac \
