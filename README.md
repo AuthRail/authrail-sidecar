@@ -40,11 +40,12 @@ AuthRail ── signed Rails ──▶ sidecar ◀── local adapter ◀──
 
 The sidecar and an adapter work together: the sidecar owns local decisions and
 report delivery; the adapter places checks at the application's actual action
-boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node)
-or [Go SDK](https://github.com/AuthRail/authrail-sdk-go) to connect your
+boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node),
+the [Go SDK](https://github.com/AuthRail/authrail-sdk-go), or the
+[Python SDK](https://github.com/AuthRail/authrail-sdk-python) to connect your
 application through the supported adapters. The sidecar is not a hosted decision endpoint or a
 shared service for unrelated deployments.
-The Node and Go SDKs have Enforce wrappers. Both SDKs' Observe wrappers remain
+The Node, Go and Python SDKs have Enforce wrappers. Their Observe wrappers remain
 advisory. Review the installed adapter and bypass paths before switching modes.
 
 ## Before you start
@@ -189,7 +190,7 @@ curl --fail --silent --show-error http://127.0.0.1:7078/health
 Look for `bundleValid: true` and the expected bundle sequence. This endpoint can
 respond while configuration is missing, so an HTTP 200 alone does not establish
 readiness. Leave the sidecar running, then connect your application using the
-Node or Go SDK at `http://127.0.0.1:7078`. Stop the foreground process with
+Node, Go or Python SDK at `http://127.0.0.1:7078`. Stop the foreground process with
 Ctrl+C; restart with the same settings and state directory.
 
 If you want to distribute your own native build to another machine of the same
@@ -247,8 +248,9 @@ Use an AuthRail adapter at the protected function boundary. It sends a signed
 `tool_call` before the function and a signed `tool_result` after a successful
 result. Both phases carry the same stable action key. The local endpoint is
 `POST http://127.0.0.1:7078/evaluate`; use the adapter token as its Bearer
-credential. The [Node SDK](https://github.com/AuthRail/authrail-sdk-node) and
-[Go SDK](https://github.com/AuthRail/authrail-sdk-go) handle signing and the
+credential. The [Node SDK](https://github.com/AuthRail/authrail-sdk-node),
+[Go SDK](https://github.com/AuthRail/authrail-sdk-go) and
+[Python SDK](https://github.com/AuthRail/authrail-sdk-python) handle signing and the
 request format; install one in the protected application, not in the sidecar.
 
 The application must authenticate the caller and resolve any target resource
