@@ -362,3 +362,19 @@ good.
 - [Contributing](CONTRIBUTING.md): build and test conventions.
 - [OpenShell protected executor](integrations/openshell/README.md): customer-owned
   placement and source integration, with separate containment validation requirements.
+
+## Build identity and CI
+
+The sidecar has its own version, separate from the SDK versions. Check a packaged
+binary with `./authrail-sidecar --version`, or an image with
+`docker run --rm YOUR_IMAGE --version`. The JSON shows its version, source commit,
+and configuration, protocol and state format numbers. This command needs no
+credentials and does not start the service. A direct `go build` reports
+`development` and `unknown`; `scripts/package.sh` and Docker's `VERSION` and
+`REVISION` build arguments supply distribution identity.
+
+Sidecar CI checks native builds on Linux and macOS, race tests, signed protocol
+compatibility with pinned Node/Go/Python SDKs, and the Docker image. Disposable
+container checks cover private networking, restart state and protected SDK
+callbacks. These checks use local fixtures, not customer deployments or provider
+credentials. The CI workflow does not publish images or native archives.

@@ -11,7 +11,7 @@ RUN go mod download
 COPY cmd ./cmd
 COPY sidecar ./sidecar
 COPY docker/launcher ./docker/launcher
-RUN CGO_ENABLED=0 go build -trimpath -o /out/authrail-sidecar ./cmd/authrail-sidecar \
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${VERSION} -X main.revision=${REVISION}" -o /out/authrail-sidecar ./cmd/authrail-sidecar \
  && CGO_ENABLED=0 go build -trimpath -o /out/authrail-container ./docker/launcher \
  && mkdir -p /out/state/authrail \
  && chmod 0700 /out/state/authrail
