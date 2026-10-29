@@ -21,7 +21,7 @@ mkdir "$output/$name"
 
 (cd "$repository" && go build -trimpath -ldflags "-X main.version=$version -X main.revision=$revision" -o "$output/$name/authrail-sidecar" ./cmd/authrail-sidecar)
 cp "$repository/README.md" "$repository/PROTOCOL.md" "$repository/COMPATIBILITY.md" \
-  "$repository/LICENSE" "$output/$name/"
+  "$repository/LICENSE" "$repository/RELEASING.md" "$output/$name/"
 cp -R "$repository/conformance" "$output/$name/"
 mkdir "$output/$name/docker"
 cp "$repository/docker/README.md" "$output/$name/docker/README.md"

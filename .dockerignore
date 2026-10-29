@@ -13,6 +13,7 @@
 !docker/launcher/*.go
 !docker/README.md
 !README.md
+!RELEASING.md
 !PROTOCOL.md
 !COMPATIBILITY.md
 !conformance/
