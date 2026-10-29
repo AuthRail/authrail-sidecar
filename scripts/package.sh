@@ -12,13 +12,14 @@ case "$version" in
 esac
 
 repository=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+revision=$(git -C "$repository" rev-parse --verify HEAD 2>/dev/null || printf unknown)
 platform_os=$(go env GOOS)
 platform_arch=$(go env GOARCH)
 name="authrail-sidecar-${version}-${platform_os}-${platform_arch}"
 mkdir -p "$output"
 mkdir "$output/$name"
 
-(cd "$repository" && go build -trimpath -o "$output/$name/authrail-sidecar" ./cmd/authrail-sidecar)
+(cd "$repository" && go build -trimpath -ldflags "-X main.version=$version -X main.revision=$revision" -o "$output/$name/authrail-sidecar" ./cmd/authrail-sidecar)
 cp "$repository/README.md" "$repository/PROTOCOL.md" "$repository/COMPATIBILITY.md" \
   "$repository/LICENSE" "$output/$name/"
 cp -R "$repository/conformance" "$output/$name/"
@@ -29,8 +30,8 @@ for guide_asset in README.md executor.mjs containment.mjs start.mjs example-conf
   operator-settings.example.json package.json package-lock.json policy.yaml; do
   cp "$repository/integrations/openshell/$guide_asset" "$output/$name/integrations/openshell/$guide_asset"
 done
-printf '{"version":"%s","os":"%s","arch":"%s","bundleFormat":1,"localProtocolFormat":1,"stateFormat":1}\n' \
-  "$version" "$platform_os" "$platform_arch" > "$output/$name/manifest.json"
+printf '{"version":"%s","revision":"%s","os":"%s","arch":"%s","bundleFormat":1,"localProtocolFormat":1,"stateFormat":1}\n' \
+  "$version" "$revision" "$platform_os" "$platform_arch" > "$output/$name/manifest.json"
 (cd "$output" && tar -czf "$name.tar.gz" "$name")
 (cd "$output" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
 printf '%s\n' "$output/$name.tar.gz"

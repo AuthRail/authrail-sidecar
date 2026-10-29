@@ -1,0 +1,139 @@
+name: Sidecar CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, feat/runtime-sidecar]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Check formatting
+        run: test -z "$(gofmt -l cmd sidecar docker/launcher)"
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  adapters:
+    name: Node, Go and Python protocol compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: authrail-sidecar
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: AuthRail/authrail-sdk-node
+          ref: f1d834ea6c5f74b7033097ac851f6c4b6b3debd6
+          path: authrail-sdk-node
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: AuthRail/authrail-sdk-go
+          ref: 9afa9a18cfde13d31e1a9e930ad64bfd2c12f88e
+          path: authrail-sdk-go
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: authrail-sdk-node/package-lock.json
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - run: npm ci
+        working-directory: authrail-sdk-node
+      - run: npm run build
+        working-directory: authrail-sdk-node
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: AuthRail/authrail-sdk-python
+          ref: 234e9c3aec55f6c89e35a49c02841122e211c426
+          path: authrail-sdk-python
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install ./authrail-sdk-python
+      - run: sh scripts/check-sidecar.sh
+        working-directory: authrail-sdk-go
+      - run: python authrail-sdk-python/verification/observe_sidecar.py
+      - name: Check OpenShell example JavaScript
+        run: |
+          for file in authrail-sidecar/integrations/openshell/*.mjs; do
+            node --check "$file"
+          done
+
+  docker:
+    name: Docker image and protected SDK callbacks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: authrail-sidecar
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: AuthRail/authrail-sdk-node
+          ref: f1d834ea6c5f74b7033097ac851f6c4b6b3debd6
+          path: authrail-sdk-node
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: AuthRail/authrail-sdk-go
+          ref: 9afa9a18cfde13d31e1a9e930ad64bfd2c12f88e
+          path: authrail-sdk-go
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: authrail-sdk-node/package-lock.json
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - run: npm ci
+        working-directory: authrail-sdk-node
+      - run: npm run build
+        working-directory: authrail-sdk-node
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Build candidate image
+        run: >-
+          docker build --build-arg VERSION=ci --build-arg REVISION=${{ github.sha }}
+          -t authrail-sidecar:ci .
+        working-directory: authrail-sidecar
+      - name: Verify image build identity
+        run: |
+          docker run --rm authrail-sidecar:ci --version > /tmp/sidecar-version.json
+          python -c 'import json, os; value=json.load(open("/tmp/sidecar-version.json")); assert value["version"] == "ci"; assert value["revision"] == os.environ["EXPECTED_REVISION"]'
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+      - run: docker pull node:22-slim
+      - run: python scripts/docker-smoke.py authrail-sidecar:ci
+        working-directory: authrail-sidecar
+      - run: python scripts/docker-sdk-smoke.py authrail-sidecar:ci
+        working-directory: authrail-sidecar

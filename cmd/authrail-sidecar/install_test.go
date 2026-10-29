@@ -60,6 +60,30 @@ func TestCleanBinaryRestartPreservesSequence(t *testing.T) {
 		t.Fatalf("package unpack: %v %s", err, output)
 	}
 	binary := filepath.Join(installRoot, name, "authrail-sidecar")
+	// Verify the shipped executable agrees with its manifest without any credentials.
+	versionOutput, err := exec.Command(binary, "--version").Output()
+	if err != nil {
+		t.Fatalf("package version: %v", err)
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(installRoot, name, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual, manifest map[string]any
+	if err := json.Unmarshal(versionOutput, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"version", "revision", "bundleFormat", "localProtocolFormat", "stateFormat"} {
+		if actual[key] != manifest[key] {
+			t.Fatalf("binary/manifest mismatch for %s: %v != %v", key, actual[key], manifest[key])
+		}
+	}
+	if actual["version"] != "test-v1" || actual["revision"] == "" {
+		t.Fatalf("missing build identity: %v", actual)
+	}
 	stateFile := filepath.Join(root, "private", "state.json")
 	port, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

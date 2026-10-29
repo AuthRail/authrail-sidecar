@@ -44,7 +44,10 @@ try:
         subprocess.run(["go", "build", "-trimpath", "-o", str(directory / "check"),
                         str(repository / "scripts/docker-sdk-smoke.go")], env=environment, check=True)
         docker("volume", "create", volume)
-        docker("run", "-d", "--name", runner, "--read-only", "--cap-drop", "ALL",
+        # Keep private fixture files readable by the invoking Linux user; Docker
+        # Desktop remaps ownership, but hosted Linux runners do not.
+        docker("run", "-d", "--name", runner, "--user", f"{os.getuid()}:{os.getgid()}",
+               "--read-only", "--cap-drop", "ALL",
                "--security-opt", "no-new-privileges:true",
                "--mount", "type=bind,src=" + scratch + ",dst=/fixture",
                "--mount", "type=bind,src=" + str(node_sdk) + ",dst=/workspace/authrail-sdk-node,readonly",

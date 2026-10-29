@@ -16,7 +16,23 @@ import (
 	"github.com/AuthRail/authrail-sidecar/sidecar"
 )
 
+// Distribution builds set these values; direct source builds remain identifiable.
+var version = "development"
+var revision = "unknown"
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		if err := json.NewEncoder(os.Stdout).Encode(struct {
+			Version             string `json:"version"`
+			Revision            string `json:"revision"`
+			BundleFormat        int    `json:"bundleFormat"`
+			LocalProtocolFormat int    `json:"localProtocolFormat"`
+			StateFormat         int    `json:"stateFormat"`
+		}{version, revision, 1, 1, 1}); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 {
 		if os.Args[1] != "recording-gaps" {
 			log.Fatal("unknown command; use recording-gaps list|acknowledge for offline operator review")
