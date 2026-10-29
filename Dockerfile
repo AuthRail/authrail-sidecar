@@ -30,7 +30,7 @@ COPY --from=build /out/authrail-sidecar /usr/local/bin/authrail-sidecar
 COPY --from=build /out/authrail-container /usr/local/bin/authrail-container
 COPY --from=build --chown=10001:10001 /out/state/ /var/lib/
 COPY LICENSE /LICENSE
-COPY README.md PROTOCOL.md COMPATIBILITY.md /usr/share/authrail/
+COPY README.md PROTOCOL.md COMPATIBILITY.md RELEASING.md /usr/share/authrail/
 COPY docker/README.md /usr/share/authrail/docker/README.md
 COPY conformance /usr/share/authrail/conformance
 COPY integrations/openshell /usr/share/authrail/integrations/openshell

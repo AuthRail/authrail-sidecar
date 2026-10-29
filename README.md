@@ -378,3 +378,5 @@ compatibility with pinned Node/Go/Python SDKs, and the Docker image. Disposable
 container checks cover private networking, restart state and protected SDK
 callbacks. These checks use local fixtures, not customer deployments or provider
 credentials. The CI workflow does not publish images or native archives.
+
+Maintainers: see [Releasing](RELEASING.md) for checked artifacts and publication setup.
