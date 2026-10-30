@@ -43,7 +43,10 @@ report delivery; the adapter places checks at the application's actual action
 boundary. Choose the [Node SDK](https://github.com/AuthRail/authrail-sdk-node),
 the [Go SDK](https://github.com/AuthRail/authrail-sdk-go), or the
 [Python SDK](https://github.com/AuthRail/authrail-sdk-python) to connect your
-application through the supported adapters. The sidecar is not a hosted decision endpoint or a
+application through the supported adapters. Published SDK **0.1.1** is available
+on [npm](https://www.npmjs.com/package/@authrail/sdk-node),
+[PyPI](https://pypi.org/project/authrail/) and
+[Go package documentation](https://pkg.go.dev/github.com/AuthRail/authrail-sdk-go). The sidecar is not a hosted decision endpoint or a
 shared service for unrelated deployments.
 The Node, Go and Python SDKs have Enforce wrappers. Their Observe wrappers remain
 advisory. Review the installed adapter and bypass paths before switching modes.
@@ -99,16 +102,17 @@ key or provider credentials into the sidecar.
 You run one sidecar process using **either Docker or a native binary**. Both
 run the same decision service; the SDK still belongs in your application.
 
-| Choose | What you install locally | What the build produces | How it runs |
-| --- | --- | --- | --- |
-| Docker (recommended) | Git, Docker Engine/Desktop and Docker Compose | A local Docker image; Go compilation happens inside Docker | Compose starts a container from that image |
-| Native | Git and Go 1.26+ | An executable for your current operating system/CPU | Your terminal or service manager runs that executable |
+| Choose | What you need | What you run |
+| --- | --- | --- |
+| Docker (recommended) | Git, Docker Engine/Desktop and Compose | Build a local image, then start its container. Go compilation happens inside Docker. |
+| Native download | The archive for your operating system/CPU | Unpack the executable, supply deployment settings, then run it in a terminal or service manager. No Go installation is needed. |
+| Native source build | Git and Go 1.26+ | Compile the executable yourself, then use the same native run settings. |
 
-There is no published container image or downloadable binary release for this
-source setup yet. Start with the source on `main`, then pin a reviewed commit
-for repeatable deployments. You do **not** build a native binary first and put
-it into Docker. The Dockerfile downloads the Go toolchain in its build stage,
-compiles the source there, and packages the executable in the final image.
+Native sidecar **0.1.0** archives and checksums are available from
+[GitHub Releases](https://github.com/AuthRail/authrail-sidecar/releases/tag/v0.1.0)
+for macOS and Linux on amd64 and arm64. For Docker, use the source-build steps
+below. You do **not** build a native binary first and put it into Docker: its
+Dockerfile compiles and packages the program for you.
 
 ## Install with Docker (recommended)
 
@@ -139,11 +143,37 @@ local network namespace. A host application cannot reach the Docker container
 through the host's own `127.0.0.1:7078`; use the documented topology or choose
 native for a host-native application. Never publish the decision port.
 
-## Native build and run
+## Download and run natively
 
-Choose this route when you want the sidecar to run directly on your machine
-beside a host-native application. Install Git and Go 1.26 or newer first. From
-a fresh terminal:
+Choose native when your protected application runs directly on the same host.
+Download the **0.1.0** archive and its matching `.sha256` file from
+[the release](https://github.com/AuthRail/authrail-sidecar/releases/tag/v0.1.0).
+Choose `darwin` for macOS or `linux` for Linux, then `arm64` or `amd64` for your
+CPU. `uname -m` reports `arm64`/`aarch64` for arm64 or `x86_64` for amd64.
+
+For example, on an Apple silicon Mac, download and unpack in a new directory:
+
+```sh
+mkdir authrail-sidecar-download &&
+cd authrail-sidecar-download &&
+curl --fail --location --remote-name https://github.com/AuthRail/authrail-sidecar/releases/download/v0.1.0/authrail-sidecar-0.1.0-darwin-arm64.tar.gz &&
+curl --fail --location --remote-name https://github.com/AuthRail/authrail-sidecar/releases/download/v0.1.0/authrail-sidecar-0.1.0-darwin-arm64.tar.gz.sha256 &&
+shasum -a 256 -c authrail-sidecar-0.1.0-darwin-arm64.tar.gz.sha256 &&
+tar -xzf authrail-sidecar-0.1.0-darwin-arm64.tar.gz &&
+cd authrail-sidecar-0.1.0-darwin-arm64 &&
+./authrail-sidecar --version
+```
+
+The checksum should report `OK`; do not unpack a failed download. The version
+command prints build identity and exits without connecting to AuthRail. The
+archive includes the executable, `manifest.json`, guides, protocol examples
+and the OpenShell example. Downloading it does not configure or start a service.
+On Linux, `sha256sum -c` can verify the matching checksum file instead.
+
+<details>
+<summary>Build the native executable from source instead</summary>
+
+Install Git and Go 1.26 or newer, then run:
 
 ```sh
 git clone https://github.com/AuthRail/authrail-sidecar.git
@@ -151,9 +181,13 @@ cd authrail-sidecar
 go build -o authrail-sidecar ./cmd/authrail-sidecar
 ```
 
-This creates the `authrail-sidecar` executable in the repository directory. It
-does not start it. The `./cmd/authrail-sidecar` path is the source package to
-compile; `./authrail-sidecar` below is the executable you run.
+This creates `./authrail-sidecar` in the checkout. It has not started it.
+Choose a reviewed source commit for a repeatable build, then use the same
+settings and run command below.
+
+</details>
+
+### Supply settings and start it
 
 Finish the AuthRail setup above and have your deployment-token file,
 adapter-token file and registered executor public PEM ready in a private
@@ -357,8 +391,8 @@ good.
   state, queue, and recovery invariants.
 - [Local protocol](PROTOCOL.md): raw HTTP shape, signed phases, effect receipts,
   conformance, and coverage review.
-- [Compatibility](COMPATIBILITY.md): current source protocol and state formats,
-  component checks, and the limit of the unpublished release matrix.
+- [Compatibility](COMPATIBILITY.md): published component versions, protocol and
+  state requirements, verification evidence and deployment coverage checks.
 - [Contributing](CONTRIBUTING.md): build and test conventions.
 - [OpenShell protected executor](integrations/openshell/README.md): customer-owned
   placement and source integration, with separate containment validation requirements.
@@ -377,6 +411,8 @@ Sidecar CI checks native builds on Linux and macOS, race tests, signed protocol
 compatibility with pinned Node/Go/Python SDKs, and the Docker image. Disposable
 container checks cover private networking, restart state and protected SDK
 callbacks. These checks use local fixtures, not customer deployments or provider
-credentials. The CI workflow does not publish images or native archives.
+credentials. The separate Release workflow publishes versioned native archives and images
+when its publication option is selected. Image upload alone does not establish
+anonymous registry access; use the Docker source build above.
 
 Maintainers: see [Releasing](RELEASING.md) for checked artifacts and publication setup.

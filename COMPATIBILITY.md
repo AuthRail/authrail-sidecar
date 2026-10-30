@@ -1,11 +1,53 @@
-# Runtime compatibility, current development contract
+# Runtime compatibility and coverage
 
-These are protocol requirements for the current source trees. They are not a
-published release matrix or a guarantee that independently installed package
-versions have passed connected acceptance. Pin all components to versions
-verified together before enabling Enforce.
+Use this reference to choose the sidecar and SDK versions for an application,
+understand the checks behind them, and review the paths your deployment
+protects. A compatible protocol is necessary; it does not automatically place
+checks around every tool or prove an external business effect.
 
-## Locally checked source combination, October 21, 2026
+## Published components
+
+| Component | Version | Install or download |
+| --- | --- | --- |
+| AuthRail sidecar | `0.1.0` | [Native archives and checksums](https://github.com/AuthRail/authrail-sidecar/releases/tag/v0.1.0) for macOS/Linux, amd64/arm64. For Docker, [build from source](docker/README.md). |
+| Node SDK | `0.1.1` | [@authrail/sdk-node on npm](https://www.npmjs.com/package/@authrail/sdk-node): `npm install @authrail/sdk-node@0.1.1` |
+| Python SDK | `0.1.1` | [authrail on PyPI](https://pypi.org/project/authrail/): `python -m pip install authrail==0.1.1` |
+| Go SDK | `v0.1.1` | [Module documentation](https://pkg.go.dev/github.com/AuthRail/authrail-sdk-go): `go get github.com/AuthRail/authrail-sdk-go@v0.1.1` |
+
+The SDK `0.1.1` tags have the same Runtime implementation as their respective
+`0.1.0` tags. Their changes are documentation, publication workflow and package
+version metadata. Node `src/`, Python `src/authrail/`, and Go Runtime sources and
+module dependencies have no differences between those tags. These are separate
+SDK and sidecar version numbers; they do not need to match numerically.
+
+Native archive checksums and `--version` identify the downloaded sidecar build.
+For a locally built Docker image, retain its source revision and image digest.
+The source-build instructions do not require public container-registry access.
+An uploaded registry image must not be treated as anonymously available until
+its access has been checked.
+
+## Verification evidence and its limits
+
+Node and Go have connected checks of call/result decisions, retained execution
+reports and approval/recovery transitions against AuthRail services and
+PostgreSQL. Python's installed `0.1.0` wheel also passed allow, deny/no effect,
+approval wait/no effect, named review, encrypted continuation and fresh-client
+resume, and consumed-approval blocking against a packaged sidecar and actual
+server services with disposable PostgreSQL. The unchanged Runtime sources in
+SDK `0.1.1` preserve that implementation; package installation/import checks
+also cover the published versions.
+
+These checks use isolated business effects. They do not establish a real
+provider payment, independent provider verification, or coverage of all routes
+in a customer's application. Source-level evidence does not mean every
+released image/platform combination has repeated the entire connected journey.
+The release pipeline's build and package checks remain distinct from that
+journey and from customer acceptance.
+
+<details>
+<summary>Earlier source-level evidence and scope</summary>
+
+**Earlier connected source check — October 21, 2026**
 
 | Component | Source revision | Connected evidence |
 | --- | --- | --- |
@@ -21,7 +63,7 @@ provider outcome lookup. The separate Observe test rolls back its Actions.
 These checks establish a source combination for development, not release
 artifacts or a customer deployment coverage review.
 
-### Coverage demonstrated by this fixture
+**Coverage demonstrated by that check**
 
 | Adapter path | Intercepted here | Outside this fixture's claim |
 | --- | --- | --- |
@@ -33,20 +75,36 @@ An Enforce claim for a customer deployment requires a separate inventory of all
 paths to each provider and its credentials. Any path that bypasses the protected
 executor makes that deployment advisory, even when these tests pass.
 
-| Component | Current contract | Required check |
-| --- | --- | --- |
-| Signed Rail bundle | Manifest `formatVersion: 1`; exact tenant and deployment audience, key pin, sequence, activation, and expiry | Sidecar `/health` shows the expected valid bundle and sequence. |
-| Local decision HTTP | Evaluation `formatVersion: 1`, Ed25519 executor proof, stable `Idempotency-Key`, call and result phases | Run the packaged `conformance/v1` canonical, decision, failure, and signed request vectors. |
-| Approval and effect HTTP | One-use permit claim and authenticated receipt endpoints; receipt event key binds Action, attempt, and event | Verify server persistence through the current Runtime receipt contract and migration 0226 or later. |
-| Node adapter | Current source exports Observe and Enforce; Observe always remains advisory | `npm test` and package-content check for `dist/enforce/client.js`. |
-| Go adapter | Current source exports Observe and Enforce; Observe always remains advisory | `go test ./...`; the deterministic Go proof must pass the real sidecar handler. |
-| Private sidecar state | Disk format 1 with sequence floor, adjacent report queue and trajectory ledger | Preserve the whole private set on upgrade and rollback; pass isolated archive restart check. |
 
-The format number only names a wire or disk shape. It does not prove that an
-adapter intercepts every path, that a provider effect is idempotent, or that a
-specific build has passed customer acceptance. A deployment's actual tool
-calls, results, subagents, shell, files, egress, and credential paths need a
-separate coverage and bypass review. The current compatibility claim is
-limited to the validated source trees and isolated tests. A versioned release
-table requires immutable artifacts and connected checks against those exact
-artifacts.
+</details>
+
+## Protocol and state requirements
+
+| Component | Contract | Required check |
+| --- | --- | --- |
+| Signed Rail bundle | Manifest `formatVersion: 1`; exact organisation and deployment, trusted signing key, sequence, activation and expiry. | Local health shows the valid expected bundle and sequence. |
+| Local decisions | Evaluation `formatVersion: 1`, Ed25519 executor proof, stable Action key, call and result checks. | Shared `conformance/v1` examples check canonical encoding, signed requests, decisions and failures. |
+| Approval and execution reports | One-use permit claim and signed receipts binding the Action, attempt and event. | Check saved approval/resume and execution recovery against the deployed server's contract. |
+| Node adapter | Observe and Enforce; Observe remains advisory. | `npm test`, package-content checks and the application's protected callback. |
+| Python adapter | Asyncio Observe and Enforce, callable from a script through `asyncio.run`; Observe remains advisory. | Python package checks and the application's protected callback, including saved approval continuation/recovery. |
+| Go adapter | Observe and Enforce; Observe remains advisory. | `go test ./...`, signed sidecar checks and the application's protected function or handler. |
+| Private sidecar state | Disk format 1, accepted sequence protection, report queue and saved session history. | Preserve the entire private state set through restarts and upgrades. |
+
+## Verify the application's coverage
+
+Before enabling Enforce, exercise an allowed request, a denied request and an
+approval-required request using the actual protected function. Check that a
+denial has no effect, that approval resumes the same saved call, and that an
+uncertain response is reconciled without duplicating the operation. A call
+report only saved in a local queue cannot start Enforce execution.
+
+Review every route to the same provider and its credentials: other tools,
+HTTP routes, shell commands, files, network access and subagents. A route that
+bypasses the protected executor makes that path advisory, even with a healthy
+sidecar. Keep those gaps visible instead of inferring coverage from a passing
+protocol test.
+
+Before changing versions, preserve state, keys, pending approvals and
+application recovery records. Test the intended combination in a safe
+installation. A format number names a message or disk shape; it does not prove
+business idempotency, complete interception or acceptance of the deployment.
