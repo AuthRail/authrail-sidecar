@@ -1,7 +1,9 @@
 # Releasing
 
 This guide is for maintainers. Public setup remains in the README. The initial
-release version is **0.1.0**. Preparing a release does not publish it.
+release version is **0.1.0**. Its native archives are available in the public
+[GitHub release](https://github.com/AuthRail/authrail-sidecar/releases/tag/v0.1.0).
+Preparing another release does not publish it.
 
 ## Check a candidate
 
@@ -24,10 +26,10 @@ that approved `v0.1.0` tag; never move a published tag. The publish workflow
 requires the tag to point to the exact main commit being run. An intervening
 main commit requires reviewing the release identity again.
 
-Configure the GitHub environment below with the owner as a required reviewer
-and deployment branches restricted to `main`. Publishing is a separate manual
-Release workflow run with **publish checked**. A pull request, ordinary push
-or check-only run cannot publish.
+Keep the GitHub publishing environment restricted to `main`. It has no required
+reviewer or waiting period. An explicit Release workflow run with **publish
+checked** proceeds to publication after CI succeeds. A pull request, ordinary
+push or check-only run cannot publish.
 
 ## Sidecar setup
 
@@ -47,8 +49,11 @@ image, then creates a GitHub release containing native archives and checksums.
 It does not rebuild the images while holding registry credentials or overwrite
 an existing version. A partial publication requires review before retrying.
 
-After first publication, check the GHCR package's visibility is **Public** and
-verify anonymous pulls. Use the published image digest for deployment. Check
+The 0.1.0 images have been uploaded to GHCR but remain **private** because the
+organisation disables public package visibility. The owner must allow public
+packages and change this package to **Public** before anonymous pulls can work.
+Do not advertise the image as publicly available until that change is verified.
+For each public release, verify anonymous pulls. Use the published image digest for deployment. Check
 native archive checksums and binary/manifest identity, install from an empty
 setup, and verify the exact SDK/package combination before updating public docs.
 The check-only image archives are review artifacts, not published registry images.
