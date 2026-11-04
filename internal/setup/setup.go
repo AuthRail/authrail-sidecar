@@ -21,14 +21,17 @@ import (
 	"time"
 )
 
-// Run signs in, confirms one deployment and registers a locally retained application key.
-// Setup access remains in memory; private keys never leave this computer.
+// Run confirms one deployment, registers locally saved keys/credentials and can
+// start its sidecar. Setup access remains in memory; private keys stay local.
 func Run(ctx context.Context, args []string, output io.Writer) error {
+	parentCtx := ctx
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	flags.SetOutput(output)
 	api := flags.String("api-url", os.Getenv("AUTHRAIL_SETUP_API_URL"), "AuthRail API origin")
 	directory := flags.String("directory", "", "private application configuration directory (default: user config/authrail/deployments/deployment ID)")
 	noBrowser := flags.Bool("no-browser", false, "print the sign-in address without opening a browser")
+	listen := flags.String("listen", "127.0.0.1:7078", "private native sidecar listener")
+	runtimeMode := flags.String("runtime", "connection", "connection saves private settings; native runs beside a host application; docker starts a private container")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -37,6 +40,9 @@ func Run(ctx context.Context, args []string, output io.Writer) error {
 	}
 	if flags.NArg() != 0 {
 		return errors.New("setup does not accept positional arguments")
+	}
+	if *runtimeMode != "connection" && *runtimeMode != "docker" && *runtimeMode != "native" {
+		return errors.New("use --runtime connection, --runtime native or --runtime docker")
 	}
 	c, err := newClient(*api)
 	if err != nil {
@@ -103,6 +109,11 @@ func Run(ctx context.Context, args []string, output io.Writer) error {
 	var registered struct {
 		Fingerprint string `json:"keySha256"`
 	}
+	// Bind the directory before a remote change so an interrupted setup cannot
+	// later attach these files to a different deployment.
+	if err := saveConnection(*directory, c.origin, connection, key.Fingerprint); err != nil {
+		return err
+	}
 	if err := c.request(ctx, http.MethodPost, "/runtime/setup/executor-key",
 		map[string]string{"publicKeyPem": key.PublicPEM}, &registered); err != nil {
 		return err
@@ -110,12 +121,27 @@ func Run(ctx context.Context, args []string, output io.Writer) error {
 	if registered.Fingerprint != key.Fingerprint {
 		return errors.New("AuthRail registered an unexpected application key")
 	}
-	if err := saveConnection(*directory, c.origin, connection, key.Fingerprint); err != nil {
+	token, err := prepareCredentials(*directory)
+	if err != nil {
+		return err
+	}
+	if err := c.registerCredential(ctx, token, key.Fingerprint); err != nil {
 		return err
 	}
 	fmt.Fprintln(output, "Application key registered. Private connection files saved in:")
 	fmt.Fprintln(output, *directory)
-	fmt.Fprintln(output, "No sidecar was started. Deployment credentials and sidecar installation are separate from this connection step.")
+	fmt.Fprintln(output, "Deployment and adapter credentials saved privately.")
+	if *runtimeMode == "native" {
+		return runNative(parentCtx, *directory, c.origin, *listen, connection, output)
+	}
+	if *runtimeMode == "docker" {
+		installation, err := dockerFor(*directory, c.origin, connection)
+		if err != nil {
+			return err
+		}
+		return installation.start(ctx, output)
+	}
+	fmt.Fprintln(output, "No sidecar was started. Use --runtime docker for an application that runs in containers.")
 	return nil
 }
 

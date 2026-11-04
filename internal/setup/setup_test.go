@@ -107,3 +107,33 @@ func privateTestDirectory(t *testing.T) string {
 	}
 	return dir
 }
+
+// A local write must precede remote registration; retries must retain both tokens.
+func TestCredentialsSurviveInterruptedSetup(t *testing.T) {
+	dir := privateTestDirectory(t)
+	first, err := prepareCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := os.ReadFile(filepath.Join(dir, "adapter-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := prepareCredentials(dir)
+	if err != nil || first != second {
+		t.Fatalf("deployment credential changed: %v", err)
+	}
+	again, _ := os.ReadFile(filepath.Join(dir, "adapter-token"))
+	if string(adapter) != string(again) {
+		t.Fatal("adapter token changed")
+	}
+	if !deploymentTokenPattern.MatchString(first) || !adapterTokenPattern.MatchString(strings.TrimSpace(string(adapter))) {
+		t.Fatal("invalid generated credentials")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "deployment-token"), []byte("broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareCredentials(dir); err == nil {
+		t.Fatal("replaced an unreadable deployment credential")
+	}
+}

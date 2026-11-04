@@ -5,6 +5,9 @@
 !cmd/
 !cmd/**/
 !cmd/**/*.go
+!internal/
+!internal/**/
+!internal/**/*.go
 !sidecar/
 !sidecar/**/
 !sidecar/**/*.go
