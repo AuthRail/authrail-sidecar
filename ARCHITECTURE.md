@@ -13,6 +13,21 @@ AuthRail ── signed deployment bundle ──▶ sidecar ◀── signed call
 
 ## Ownership and trust
 
+The executable's `setup` connection step opens this installation's browser sign-in
+page and accepts a proof-bound callback on an ephemeral IPv4 loopback listener.
+The person confirms one deployment. Its temporary setup bearer remains in memory
+and is accepted only by the server's dedicated setup routes. Redirects are refused;
+remote API/sign-in addresses require HTTPS. No provider key or browser cookie is
+transferred to the terminal.
+
+The terminal creates/reuses an Ed25519 private key and submits only the public PEM.
+Its private directory uses mode 0700 and files mode 0600. A saved connection binds
+that directory to one API origin, organisation and deployment; a different binding,
+unsafe file or different registered key stops setup without overwriting files.
+`connection.json` holds non-secret IDs, signing pins and the public-key fingerprint.
+It contains no setup bearer or deployment credential. This connection step does
+not start a sidecar or establish that an application function has been protected.
+
 | Owner | Responsibility |
 | --- | --- |
 | Protected application | Authenticate the caller, resolve the target, read trusted context, keep provider credentials, and execute the function. |
