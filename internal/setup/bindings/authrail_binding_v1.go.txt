@@ -1,0 +1,81 @@
+// Package authrailbinding reads setup files in the protected Go application.
+package authrailbinding
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	authrail "github.com/AuthRail/authrail-sdk-go"
+)
+
+// SelectedOperation is setup guidance, not permission to execute a function.
+type SelectedOperation struct {
+	VersionID string `json:"operationVersionId"`
+	Summary string `json:"summary"`
+}
+
+// Binding keeps the signing client in the credential-owning application.
+type Binding struct {
+	Client *authrail.Client
+	Operations []SelectedOperation
+}
+
+// Connect reads a private installation. It never downloads credentials or chooses a caller.
+func Connect(directory, sidecarURL string) (*Binding, error) {
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode().Perm() & 0077 != 0 {
+		return nil, fmt.Errorf("private AuthRail directory required")
+	}
+	read := func(name string) ([]byte, error) {
+		path := filepath.Join(directory, name)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() & 0077 != 0 || info.Size() > 65536 {
+			return nil, fmt.Errorf("private AuthRail file required")
+		}
+		return os.ReadFile(path)
+	}
+	var connection struct {
+		FormatVersion int `json:"formatVersion"`
+		OrganisationID string `json:"organisationId"`
+		DeploymentID string `json:"deploymentId"`
+	}
+	var selected struct {
+		FormatVersion int `json:"formatVersion"`
+		OrganisationID string `json:"organisationId"`
+		DeploymentID string `json:"deploymentId"`
+		Integration *struct { Operations []SelectedOperation `json:"operations"` } `json:"integration"`
+	}
+	data, err := read("connection.json")
+	if err != nil { return nil, err }
+	if err := json.Unmarshal(data, &connection); err != nil { return nil, err }
+	data, err = read("integration.json")
+	if err != nil { return nil, err }
+	if err := json.Unmarshal(data, &selected); err != nil { return nil, err }
+	if connection.FormatVersion != 1 || selected.FormatVersion != 1 || connection.OrganisationID != selected.OrganisationID || connection.DeploymentID != selected.DeploymentID {
+		return nil, fmt.Errorf("AuthRail setup files belong to different deployments")
+	}
+	adapter, err := read("adapter-token")
+	if err != nil { return nil, err }
+	private, err := read("executor-private.pem")
+	if err != nil { return nil, err }
+	key, err := authrail.ParseExecutorPrivateKeyPEM(private)
+	if err != nil { return nil, err }
+	client, err := authrail.NewClient(authrail.Config{SidecarURL: sidecarURL,
+		OrganisationID: connection.OrganisationID, DeploymentID: connection.DeploymentID,
+		AdapterToken: strings.TrimSpace(string(adapter)), ExecutorPrivateKey: key})
+	if err != nil { return nil, err }
+	binding := &Binding{Client: client}
+	if selected.Integration != nil { binding.Operations = selected.Integration.Operations }
+	return binding, nil
+}
+
+// Operation binds a selected version to application-authenticated caller/resource/history.
+func (binding *Binding) Operation(versionID string, trusted authrail.Operation) (authrail.Operation, error) {
+	for _, operation := range binding.Operations {
+		if operation.VersionID == versionID { trusted.VersionID = versionID; return trusted, nil }
+	}
+	return authrail.Operation{}, fmt.Errorf("select published Rails for this action and rerun setup")
+}

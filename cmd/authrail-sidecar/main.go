@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AuthRail/authrail-sidecar/internal/setup"
 	"github.com/AuthRail/authrail-sidecar/sidecar"
 )
 
@@ -21,6 +22,22 @@ var version = "development"
 var revision = "unknown"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "installation" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := setup.Installation(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := setup.Run(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
 		if err := json.NewEncoder(os.Stdout).Encode(struct {
 			Version             string `json:"version"`
