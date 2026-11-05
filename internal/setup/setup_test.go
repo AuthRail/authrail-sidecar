@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +9,55 @@ import (
 	"strings"
 	"testing"
 )
+
+// Risk: rerunning/upgrading setup must not overwrite code the application owns,
+// or follow a substituted selection file outside the installation.
+func TestSDKBindingsPreserveApplicationChanges(t *testing.T) {
+	dir := privateTestDirectory(t)
+	value := connection{OrganisationID: "00000000-0000-4000-8000-000000000001", DeploymentID: "00000000-0000-4000-8000-000000000002"}
+	if err := saveBindings(dir, value, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(dir, "authrail_binding_v1.mjs")
+	owned := []byte("// Application-owned modification.\n")
+	if err := os.WriteFile(name, owned, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := saveBindings(dir, value, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	}
+	again, err := os.ReadFile(name)
+	if err != nil || string(again) != string(owned) {
+		t.Fatal("setup overwrote application changes")
+	}
+	updates, err := filepath.Glob(name + ".*.generated")
+	if err != nil || len(updates) != 1 {
+		t.Fatal("setup did not retain one stable review copy")
+	}
+	info, err := os.Stat(updates[0])
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("review copy is not private")
+	}
+	target := filepath.Join(t.TempDir(), "untouched")
+	if err := os.WriteFile(target, []byte("keep this"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "integration.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "integration.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveBindings(dir, value, io.Discard); err == nil {
+		t.Fatal("setup accepted a substituted selection file")
+	}
+	untouched, err := os.ReadFile(target)
+	if err != nil || string(untouched) != "keep this" {
+		t.Fatal("setup changed the symlink target")
+	}
+}
 
 // Risks: setup must not rotate saved keys, follow substituted private files,
 // reuse another deployment's directory, or accept a forged/replayed callback.

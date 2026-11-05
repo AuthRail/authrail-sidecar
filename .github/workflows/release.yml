@@ -6,7 +6,7 @@ on:
       version:
         description: 'Version, without v prefix'
         required: true
-        default: '0.1.0'
+        default: '0.2.0'
         type: string
       publish:
         description: 'Publish after checks (requires matching tag and publisher setup)'
@@ -114,13 +114,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: AuthRail/authrail-sdk-node
-          ref: f1d834ea6c5f74b7033097ac851f6c4b6b3debd6
+          ref: f9d6e01ebfc4fa4f34c40102bb35d706b56803f4
           path: authrail-sdk-node
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: AuthRail/authrail-sdk-go
-          ref: 9afa9a18cfde13d31e1a9e930ad64bfd2c12f88e
+          ref: cec1b80097c7a1e9b3f86b45c9556811f4adabec
           path: authrail-sdk-go
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6

@@ -32,13 +32,30 @@ type grant struct {
 }
 
 type connection struct {
-	OrganisationID string   `json:"organisationId"`
-	DeploymentID   string   `json:"deploymentId"`
-	TrustedPins    []string `json:"trustedKeyFingerprints"`
+	OrganisationID string       `json:"organisationId"`
+	DeploymentID   string       `json:"deploymentId"`
+	TrustedPins    []string     `json:"trustedKeyFingerprints"`
+	Integration    *integration `json:"integration"`
 	ExecutorKeys   []struct {
 		SHA256 string `json:"keySha256"`
 		Status string `json:"status"`
 	} `json:"executorKeys"`
+}
+
+type integration struct {
+	Mode       string           `json:"mode"`
+	Sequence   int64            `json:"sequence"`
+	ExpiresAt  time.Time        `json:"expiresAt"`
+	Operations []setupOperation `json:"operations"`
+}
+
+type setupOperation struct {
+	VersionID         string   `json:"operationVersionId"`
+	Summary           string   `json:"summary"`
+	RequiredCoverage  []string `json:"requiredCoverage"`
+	ApprovalSupported bool     `json:"approvalSupported"`
+	RequiresResource  bool     `json:"requiresResource"`
+	RequiresFacts     bool     `json:"requiresFacts"`
 }
 
 func newClient(origin string) (*client, error) {
@@ -140,6 +157,20 @@ func (c *client) connection(ctx context.Context) (connection, error) {
 	for _, pin := range value.TrustedPins {
 		if !fingerprint.MatchString(pin) {
 			return connection{}, errors.New("invalid AuthRail signing key fingerprint")
+		}
+	}
+	if value.Integration != nil {
+		selected := value.Integration
+		if (selected.Mode != "observe" && selected.Mode != "enforce") || selected.Sequence < 1 ||
+			selected.ExpiresAt.IsZero() || len(selected.Operations) > 100 {
+			return connection{}, errors.New("AuthRail returned invalid selected action details")
+		}
+		seen := map[string]bool{}
+		for _, operation := range selected.Operations {
+			if !identifier.MatchString(operation.VersionID) || seen[operation.VersionID] || len(operation.Summary) > 960 {
+				return connection{}, errors.New("AuthRail returned invalid selected action details")
+			}
+			seen[operation.VersionID] = true
 		}
 	}
 	return value, nil

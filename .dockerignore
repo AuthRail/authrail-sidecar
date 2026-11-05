@@ -8,6 +8,9 @@
 !internal/
 !internal/**/
 !internal/**/*.go
+!internal/setup/bindings/*.mjs
+!internal/setup/bindings/*.py
+!internal/setup/bindings/*.go.txt
 !sidecar/
 !sidecar/**/
 !sidecar/**/*.go

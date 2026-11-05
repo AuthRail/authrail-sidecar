@@ -48,7 +48,9 @@ func Run(ctx context.Context, args []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// Leave time for first-time human action/rule review in the workspace. The
+	// backend still bounds issued codes to sixty seconds and setup grants to ten minutes.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 	page, err := c.browserURL(ctx)
 	if err != nil {
@@ -126,6 +128,9 @@ func Run(ctx context.Context, args []string, output io.Writer) error {
 		return err
 	}
 	if err := c.registerCredential(ctx, token, key.Fingerprint); err != nil {
+		return err
+	}
+	if err := saveBindings(*directory, connection, output); err != nil {
 		return err
 	}
 	fmt.Fprintln(output, "Application key registered. Private connection files saved in:")
