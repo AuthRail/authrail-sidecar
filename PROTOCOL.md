@@ -84,6 +84,38 @@ The optional W3C `traceparent` header is validated and forwarded with checks,
 claims, receipts, and queued Observe reports. It is correlation only. Do not
 put sensitive payloads in trace fields or use them as identity or proof.
 
+## Built-in credential protection
+
+`matches_credentials_v1` compares a reviewed string field with the literal
+profile `credential_formats_v1`. Field operands and other profiles are rejected.
+Missing or non-string values remain unresolved. The profile recognises PEM
+private-key opening markers (`PRIVATE KEY`, `RSA PRIVATE KEY`, `EC PRIVATE KEY`,
+`OPENSSH PRIVATE KEY`), `gh[pousr]_` plus 36 ASCII letters/digits,
+`github_pat_` plus 82 ASCII letters/digits/underscores, and `AKIA`/`ASIA` plus
+16 uppercase ASCII letters/digits. Token matches require non-token boundaries
+on both sides; ASCII letters, digits and underscore are token characters.
+Encoded, split and other credential formats are outside this profile.
+
+The built-in sanitize handler is `authrail_redact_credentials_v1`, version
+`cea4d8ac57cc39a33a9584742b56e412ff889026cb6b69b086bccbe4cc25d833`.
+It replaces the entire reviewed string with `[REDACTED]` when the profile matches
+and preserves it otherwise. Maintained SDKs resolve this implementation without
+custom registration and reject attempts to replace its reserved identity.
+The sidecar also rejects evidence that leaves a recognised credential in that
+output, even when its digest matches. The version identifies the reviewed
+implementation contract; evidence does not attest the customer's executable.
+
+Before relaying a contextual reading, the sidecar checks selected material against
+standalone credential-denial rules and built-in redaction targets for the exact
+field and applicable phase. Protected credential material is withheld locally,
+including in Observe. A result-time reading that reuses request fields retains
+their call-time protections. This does not change Observe's business execution
+semantics or turn contextual interpretation into permission.
+
+Approved-destination protections use ordinary exact string comparisons. They do
+not perform network isolation, DNS checks, URL normalisation or redirect checks.
+The protected application must execute against the checked destination.
+
 ## Guard processing requirements
 
 Guard format 3 may attach `obligations` to a condition rule. Each obligation

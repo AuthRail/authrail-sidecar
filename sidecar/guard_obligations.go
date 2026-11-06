@@ -86,6 +86,10 @@ func validGuardObligation(item GuardObligation, phase string) bool {
 		item.Target.Root != root || len(item.Target.Path) < 1 || len(item.Target.Path) > 8 {
 		return false
 	}
+	if item.HandlerID == credentialRedactionHandlerID &&
+		(item.Kind != "sanitize" || item.HandlerVersion != credentialRedactionHandlerVersion) {
+		return false
+	}
 	for _, part := range item.Target.Path {
 		if !guardSegment.MatchString(part) || part == "__proto__" || part == "prototype" || part == "constructor" {
 			return false
@@ -208,7 +212,8 @@ func evaluateGuardObligations(requirements []GuardRequirement, evidence []GuardE
 		if status.Status != "conflict" && item.Kind != "isolate" && count == 1 && isString && len(unresolved) == 0 {
 			encoded, _ := json.Marshal(text)
 			digest := sha256.Sum256(encoded)
-			if proof.OutputSHA256 == hex.EncodeToString(digest[:]) {
+			if proof.OutputSHA256 == hex.EncodeToString(digest[:]) &&
+				(item.HandlerID != credentialRedactionHandlerID || !credentialFormatV1(text)) {
 				status.Status = "fulfilled"
 				status.InputSHA256 = proof.InputSHA256
 				status.OutputSHA256 = proof.OutputSHA256

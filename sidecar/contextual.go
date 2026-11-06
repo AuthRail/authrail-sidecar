@@ -81,6 +81,7 @@ type contextualPlan struct {
 	Requirements           []contextualRequirement `json:"requirements"`
 	DisclosureProcessing   bool                    `json:"disclosureProcessing"`
 	DisclosureRequirements []GuardRequirement      `json:"disclosureRequirements"`
+	credentialFields       []field
 }
 type contextualRequest struct {
 	FormatVersion      int           `json:"formatVersion"`
@@ -163,6 +164,13 @@ func (s *Synchronizer) contextualPlan(operationID, phase string) contextualPlan 
 				plan.Requirements = []contextualRequirement{}
 				return plan
 			}
+			credentialFields, err := credentialDisclosureFields(rail, selectedPhase)
+			if err != nil {
+				plan.Coverage = "unavailable"
+				plan.Requirements = []contextualRequirement{}
+				return plan
+			}
+			plan.credentialFields = append(plan.credentialFields, credentialFields...)
 			if len(requirements) > 0 {
 				plan.DisclosureProcessing = true
 				plan.DisclosureRequirements = append(plan.DisclosureRequirements, requirements...)
@@ -266,8 +274,21 @@ func (s *Synchronizer) validContextualRequest(request contextualRequest) bool {
 	if json.Unmarshal(material, &fields) != nil || selected == nil || len(fields) != len(selected.Fields) {
 		return false
 	}
-	for _, value := range fields {
+	for index, value := range fields {
 		if strings.TrimSpace(value) == "" {
+			return false
+		}
+		selectedField := GuardTarget{Root: selected.Fields[index].Root, Path: selected.Fields[index].Path}
+		protected := false
+		for _, target := range plan.credentialFields {
+			protected = protected || sameGuardTarget(selectedField, GuardTarget{Root: target.Root, Path: target.Path})
+		}
+		for _, requirement := range plan.DisclosureRequirements {
+			protected = protected || requirement.HandlerID == credentialRedactionHandlerID && sameGuardTarget(selectedField, requirement.Target)
+		}
+		// Observe preserves business behaviour, but never authorizes a disclosure
+		// that a selected local credential protection explicitly forbids.
+		if protected && credentialFormatV1(value) {
 			return false
 		}
 	}

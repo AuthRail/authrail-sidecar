@@ -490,6 +490,19 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribu
 		return !matched, nil, nil
 	case "compare":
 		left, leftMissing := resolveIdentity(node.Left, args, result, attribution, facts, trajectory)
+		if node.Comparison == "matches_credentials_v1" {
+			if !validCredentialComparison(node) {
+				return false, nil, errors.New("unsupported credential protection")
+			}
+			if len(leftMissing) > 0 {
+				return false, leftMissing, nil
+			}
+			text, ok := left.(string)
+			if !ok {
+				return false, []UnresolvedField{{Root: node.Left.Root, Path: node.Left.Path, Reason: "invalid_type"}}, nil
+			}
+			return credentialFormatV1(text), nil, nil
+		}
 		var right any
 		var rightMissing []UnresolvedField
 		if node.Right.Kind == "field" {
