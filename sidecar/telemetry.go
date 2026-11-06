@@ -128,7 +128,7 @@ func (t *Telemetry) WrapHTTP(route string, next http.Handler) http.Handler {
 			span.End()
 		}
 		t.logs.emit(runtimeLogEvent{Event: "request_completed", Operation: logChoice(route,
-			"evaluate", "guard_requirements", "approval_claim", "approval_recover", "observed_execution_receipt", "execution_receipt"),
+			"evaluate", "guard_requirements", "data_requirements", "approval_claim", "approval_recover", "observed_execution_receipt", "execution_receipt"),
 			Status: wrapped.status, DurationMS: time.Since(started).Milliseconds()})
 	})
 }
