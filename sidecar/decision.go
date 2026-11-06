@@ -22,6 +22,7 @@ type EvaluationRequest struct {
 	IdentityProof      IdentityProof       `json:"identityProof"`
 	ReviewSummary      *ReviewSummary      `json:"reviewSummary,omitempty"`
 	GuardEvidence      []GuardEvidence     `json:"guardEvidence,omitempty"`
+	ContextualFindings []ContextualFinding `json:"contextualFindings,omitempty"`
 }
 
 type Attribution struct {
@@ -46,6 +47,7 @@ type Evaluation struct {
 	Unresolved        []UnresolvedField       `json:"unresolved"`
 	Facts             []FactSummary           `json:"facts,omitempty"`
 	Obligations       []GuardObligationStatus `json:"obligations,omitempty"`
+	Contextual        []ContextualSummary     `json:"contextual,omitempty"`
 	RecordingStatus   string                  `json:"recordingStatus,omitempty"`
 	ReportReplayed    *bool                   `json:"reportReplayed,omitempty"`
 	ActionID          string                  `json:"actionId,omitempty"`
@@ -80,8 +82,9 @@ type railBinding struct {
 		} `json:"resourceIdentity"`
 	} `json:"operationContract"`
 	Content struct {
-		FormatVersion int               `json:"formatVersion"`
-		Rules         []json.RawMessage `json:"rules"`
+		FormatVersion int                     `json:"formatVersion"`
+		Contextual    contextualConfiguration `json:"contextual"`
+		Rules         []json.RawMessage       `json:"rules"`
 		FactBindings  []struct {
 			FactKey           string `json:"factKey"`
 			DataRailVersionID string `json:"dataRailVersionId"`
@@ -135,7 +138,7 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 	if request.FormatVersion != 1 || !uuidPattern.MatchString(request.RequestID) ||
 		!uuidPattern.MatchString(request.OperationVersionID) ||
 		(request.Phase != "tool_call" && request.Phase != "tool_result") ||
-		len(request.FactResolutions) > 100 || !validGuardEvidence(request.GuardEvidence, request.Phase) {
+		len(request.FactResolutions) > 100 || len(request.ContextualFindings) > 8 || !validGuardEvidence(request.GuardEvidence, request.Phase) {
 		return Evaluation{}, errors.New("evaluation request is invalid")
 	}
 	for _, resolution := range request.FactResolutions {
@@ -257,6 +260,16 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 				}
 			}
 		}
+		if rail.Content.Contextual.Enabled {
+			for _, assessment := range rail.Content.Contextual.Assessments {
+				if assessment.Phase != request.Phase && !(rail.Kind == "policy" && assessment.Phase == "tool_call") {
+					continue
+				}
+				fact, summary := s.resolveContextual(rail, assessment, request, arguments, result, current, manifest)
+				facts["@contextual:"+assessment.ID] = fact
+				response.Contextual = append(response.Contextual, summary)
+			}
+		}
 		evaluated, err := evaluateRules(rail, request.Phase, arguments, result, request.Attribution, facts, request.Trajectory, coveredReads)
 		if err != nil {
 			return invalidBundle(response), nil
@@ -345,6 +358,7 @@ func invalidBundle(value Evaluation) Evaluation {
 	value.Unresolved = []UnresolvedField{}
 	value.Facts = nil
 	value.Obligations = nil
+	value.Contextual = nil
 	return value
 }
 
@@ -606,8 +620,12 @@ func resolveIdentity(f field, args, result map[string]any, attribution Attributi
 		}
 		return value, nil
 	}
-	if f.Root == "facts" && len(f.Path) == 1 {
-		fact, found := facts[f.Path[0]]
+	if (f.Root == "facts" || f.Root == "contextual") && len(f.Path) == 1 {
+		key := f.Path[0]
+		if f.Root == "contextual" {
+			key = "@contextual:" + key
+		}
+		fact, found := facts[key]
 		if found && fact.status == "trusted" {
 			return fact.value, nil
 		}
@@ -615,7 +633,7 @@ func resolveIdentity(f field, args, result map[string]any, attribution Attributi
 		if found {
 			reason = fact.status
 		}
-		return nil, []UnresolvedField{{Root: "facts", Path: f.Path, Reason: reason}}
+		return nil, []UnresolvedField{{Root: f.Root, Path: f.Path, Reason: reason}}
 	}
 	if len(f.Path) == 1 && f.Path[0] == "id" {
 		switch f.Root {

@@ -30,6 +30,26 @@ is explicitly allowed, then check the result before releasing it. The
 sidecar returns decisions; only an adapter at the real execution boundary can
 apply them.
 
+## AuthRail Contextual AI
+
+A Rail can use AuthRail Contextual AI when it needs to understand selected
+material, such as whether a code change weakens authentication. Enable it on
+that Rail and describe the rule in AuthRail; review the prepared assessment and
+permitted fields before publishing. There is no model setup in the sidecar.
+
+The sidecar gives the SDK the exact selected assessment. The SDK checks required
+local processing, selects the permitted text and signs the request. The sidecar
+relays it to AuthRail using this deployment's credential. AuthRail interprets the
+material and returns a signed bounded finding; the sidecar verifies the request,
+caller, material, phase and Rail version before applying the deterministic rule.
+The finding is information, never execution permission.
+
+A disabled contextual setting causes no contextual request for that Rail.
+Missing, uncertain or invalid findings cannot clear a rule that needs them.
+AuthRail receives selected text for transient processing; raw text is excluded
+from normal diagnostics and retained Actions. See [Contextual AI](https://docs.authrail.io/docs/facts)
+for review and disclosure guidance.
+
 ## How it fits
 
 ```text

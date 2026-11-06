@@ -137,7 +137,7 @@ func collectGuardRequirements(rails []railBinding, phase string) ([]GuardRequire
 			if rule.Phase != phase {
 				continue
 			}
-			if (len(rule.Obligations) > 0 && rail.Content.FormatVersion != 3) || len(rule.Obligations) > 8 || (len(rule.Obligations) > 0 && !guardID.MatchString(rule.ID)) {
+			if (len(rule.Obligations) > 0 && rail.Content.FormatVersion != 3 && rail.Content.FormatVersion != 4) || len(rule.Obligations) > 8 || (len(rule.Obligations) > 0 && !guardID.MatchString(rule.ID)) {
 				return nil, errors.New("invalid Guard requirements")
 			}
 			for _, item := range rule.Obligations {
