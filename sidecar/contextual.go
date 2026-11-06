@@ -81,7 +81,7 @@ type contextualPlan struct {
 	Requirements           []contextualRequirement `json:"requirements"`
 	DisclosureProcessing   bool                    `json:"disclosureProcessing"`
 	DisclosureRequirements []GuardRequirement      `json:"disclosureRequirements"`
-	credentialFields       []field
+	localProtections       []disclosureProtection
 }
 type contextualRequest struct {
 	FormatVersion      int           `json:"formatVersion"`
@@ -164,13 +164,13 @@ func (s *Synchronizer) contextualPlan(operationID, phase string) contextualPlan 
 				plan.Requirements = []contextualRequirement{}
 				return plan
 			}
-			credentialFields, err := credentialDisclosureFields(rail, selectedPhase)
+			localProtections, err := localDisclosureProtections(rail, selectedPhase)
 			if err != nil {
 				plan.Coverage = "unavailable"
 				plan.Requirements = []contextualRequirement{}
 				return plan
 			}
-			plan.credentialFields = append(plan.credentialFields, credentialFields...)
+			plan.localProtections = append(plan.localProtections, localProtections...)
 			if len(requirements) > 0 {
 				plan.DisclosureProcessing = true
 				plan.DisclosureRequirements = append(plan.DisclosureRequirements, requirements...)
@@ -279,17 +279,16 @@ func (s *Synchronizer) validContextualRequest(request contextualRequest) bool {
 			return false
 		}
 		selectedField := GuardTarget{Root: selected.Fields[index].Root, Path: selected.Fields[index].Path}
-		protected := false
-		for _, target := range plan.credentialFields {
-			protected = protected || sameGuardTarget(selectedField, GuardTarget{Root: target.Root, Path: target.Path})
+		for _, protection := range plan.localProtections {
+			if sameGuardTarget(selectedField, GuardTarget{Root: protection.Field.Root, Path: protection.Field.Path}) && sensitiveFormatV1(protection.Profile, value) {
+				return false
+			}
 		}
+		// Local disclosure restrictions apply even while business operations are only observed.
 		for _, requirement := range plan.DisclosureRequirements {
-			protected = protected || requirement.HandlerID == credentialRedactionHandlerID && sameGuardTarget(selectedField, requirement.Target)
-		}
-		// Observe preserves business behaviour, but never authorizes a disclosure
-		// that a selected local credential protection explicitly forbids.
-		if protected && credentialFormatV1(value) {
-			return false
+			if sameGuardTarget(selectedField, requirement.Target) && !builtinGuardOutputValid(requirement.HandlerID, value) {
+				return false
+			}
 		}
 	}
 	proof := request.Proof

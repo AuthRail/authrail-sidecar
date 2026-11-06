@@ -503,6 +503,20 @@ func evaluateCondition(raw json.RawMessage, args, result map[string]any, attribu
 			}
 			return credentialFormatV1(text), nil, nil
 		}
+		if node.Comparison == "matches_sensitive_v1" {
+			profile, valid := validSensitiveComparison(node)
+			if !valid {
+				return false, nil, errors.New("unsupported sensitive-data protection")
+			}
+			if len(leftMissing) > 0 {
+				return false, leftMissing, nil
+			}
+			text, ok := left.(string)
+			if !ok {
+				return false, []UnresolvedField{{Root: node.Left.Root, Path: node.Left.Path, Reason: "invalid_type"}}, nil
+			}
+			return sensitiveFormatV1(profile, text), nil, nil
+		}
 		var right any
 		var rightMissing []UnresolvedField
 		if node.Right.Kind == "field" {
