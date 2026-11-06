@@ -161,3 +161,12 @@ Acknowledgement does not create a central Action or certificate.
 Keep the state file and its report queue, gap history, and trajectory ledger
 together on private storage through restart and rollback. Never share a state
 path between instances or reset these files as a recovery shortcut.
+
+## Reading an approval before resuming work
+
+The authenticated local `POST /approval-permits/status` route forwards a fresh
+`authrail.approval.status.v1` executor proof using the deployment credential.
+It returns only matching Action/approval IDs, review state and expiry. Status
+polling never votes, issues a permit or consumes an approval. Its signature purpose
+is distinct from a claim. The protected application still uses the ordinary SDK
+claim/recovery and retained-start flow before calling a business function.

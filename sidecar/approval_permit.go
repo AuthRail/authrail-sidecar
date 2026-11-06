@@ -32,16 +32,21 @@ type approvalPermit struct {
 // ApprovalPermitHandler forwards a fresh protected-executor claim using the
 // sidecar-held deployment credential. It never retries an uncertain claim.
 func ApprovalPermitHandler(syncer *Synchronizer, adapterToken string) http.Handler {
-	return approvalPermitHandler(syncer, adapterToken, false)
+	return approvalPermitHandler(syncer, adapterToken, "claim")
 }
 
 // ApprovalPermitRecoveryHandler reads a previously claimed permit without
 // issuing another claim. Only the authenticated adapter can ask for it.
 func ApprovalPermitRecoveryHandler(syncer *Synchronizer, adapterToken string) http.Handler {
-	return approvalPermitHandler(syncer, adapterToken, true)
+	return approvalPermitHandler(syncer, adapterToken, "recover")
 }
 
-func approvalPermitHandler(syncer *Synchronizer, adapterToken string, recoverExisting bool) http.Handler {
+// ApprovalStatusHandler reads review state without claiming permission or executing work.
+func ApprovalStatusHandler(syncer *Synchronizer, adapterToken string) http.Handler {
+	return approvalPermitHandler(syncer, adapterToken, "status")
+}
+
+func approvalPermitHandler(syncer *Synchronizer, adapterToken string, operation string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost {
@@ -85,10 +90,8 @@ func approvalPermitHandler(syncer *Synchronizer, adapterToken string, recoverExi
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
-		operation := "claim"
 		expectedStatus := http.StatusCreated
-		if recoverExisting {
-			operation = "recover"
+		if operation != "claim" {
 			expectedStatus = http.StatusOK
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -113,8 +116,29 @@ func approvalPermitHandler(syncer *Synchronizer, adapterToken string, recoverExi
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
+		raw, readErr := io.ReadAll(io.LimitReader(response.Body, 2049))
+		if readErr != nil || len(raw) > 2048 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if operation == "status" {
+			var status struct {
+				ActionID          string    `json:"actionId"`
+				ApprovalRequestID string    `json:"approvalRequestId"`
+				State             string    `json:"state"`
+				ExpiresAt         time.Time `json:"expiresAt"`
+			}
+			if json.Unmarshal(raw, &status) != nil || status.ActionID != claim.ActionID || status.ApprovalRequestID != claim.ApprovalRequestID ||
+				!contains([]string{"pending", "approved", "rejected", "cancelled", "expired", "consumed"}, status.State) || status.ExpiresAt.IsZero() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(status)
+			return
+		}
 		var permit approvalPermit
-		if json.NewDecoder(io.LimitReader(response.Body, 2048)).Decode(&permit) != nil ||
+		if json.Unmarshal(raw, &permit) != nil ||
 			!approvalUUID.MatchString(permit.PermitID) || permit.ActionID != claim.ActionID ||
 			!permit.ExpiresAt.After(time.Now()) {
 			w.WriteHeader(http.StatusServiceUnavailable)

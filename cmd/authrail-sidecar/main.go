@@ -150,8 +150,10 @@ func main() {
 		mux.Handle("GET /guard-requirements", telemetry.WrapHTTP("guard_requirements",
 			sidecar.GuardRequirementsHandler(synchronizer, adapterToken)))
 		mux.Handle("GET /data-requirements", telemetry.WrapHTTP("data_requirements", sidecar.DataRequirementsHandler(synchronizer, adapterToken)))
+		mux.Handle("GET /integration-operations", telemetry.WrapHTTP("integration_operations", sidecar.IntegrationOperationsHandler(synchronizer, adapterToken)))
 		mux.Handle("GET /contextual-requirements", telemetry.WrapHTTP("contextual_requirements", sidecar.ContextualHandler(synchronizer, adapterToken)))
 		mux.Handle("POST /contextual-readings", telemetry.WrapHTTP("contextual_reading", sidecar.ContextualHandler(synchronizer, adapterToken)))
+		mux.Handle("POST /approval-permits/status", telemetry.WrapHTTP("approval_status", sidecar.ApprovalStatusHandler(synchronizer, adapterToken)))
 		mux.Handle("POST /approval-permits/claim",
 			telemetry.WrapHTTP("approval_claim", sidecar.ApprovalPermitHandler(synchronizer, adapterToken)))
 		mux.Handle("POST /approval-permits/recover",
