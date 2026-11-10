@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -139,6 +141,10 @@ func TestEnforceDecisionReportsBothPhasesWithoutExecutionClaim(t *testing.T) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
+		}
+		// A slow certificate must finish inside the SDK’s ten-second call budget.
+		if body.Report.Phase == "tool_call" {
+			time.Sleep(4500 * time.Millisecond)
 		}
 		phases = append(phases, body.Report.Phase)
 		if body.Report.Evaluation.Mode != "enforce" || body.Report.Evaluation.Enforced ||
@@ -383,5 +389,82 @@ func TestObserveQueueRejectsChangedReportForSameActionAndPhase(t *testing.T) {
 	if _, err := syncer.enqueueObserve(full); err == nil ||
 		len(syncer.observeQueue.Entries) != maxObserveReports {
 		t.Fatal("full queue silently replaced or accepted a report")
+	}
+}
+
+// Immediate reporting and background recovery must not upload the same durable
+// entry concurrently: duplicate signing/retention can consume the call budget.
+func TestObserveDeliveryIsOwnedAcrossForegroundAndRetry(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012",
+		"00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{
+			"id": "ordinary", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{policy}, "enforce")
+	first := make(chan struct{})
+	duplicate := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(first)
+		} else {
+			duplicate <- struct{}{}
+		}
+		<-release
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"actionId":"00000000-0000-4000-8000-000000000020","certificateId":"00000000-0000-4000-8000-000000000021","replayed":false}`))
+	}))
+	defer server.Close()
+	// Release HTTP handlers before httptest.Server waits for their shutdown.
+	defer unblock()
+	syncer.options.ControlPlaneURL = server.URL
+	syncer.options.Token = "deployment-secret"
+	syncer.options.Client = server.Client()
+	value := signedCall(t, syncer, call(50), "owned-delivery")
+	evaluation, err := syncer.Evaluate(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		_, state := syncer.retainObserve(context.Background(), "owned-delivery", value, evaluation, "")
+		done <- state
+	}()
+	select {
+	case <-first:
+	case <-time.After(time.Second):
+		t.Fatal("foreground report did not start")
+	}
+	if syncer.Snapshot().PendingReports != 1 {
+		t.Fatal("in-flight report was not durably queued")
+	}
+	retried := make(chan error, 1)
+	go func() { retried <- syncer.RetryObservations(context.Background()) }()
+	select {
+	case err := <-retried:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-duplicate:
+		t.Fatal("background retry duplicated the foreground upload")
+	case <-time.After(time.Second):
+		t.Fatal("background retry waited on foreground network I/O")
+	}
+	if _, state := syncer.retainObserve(context.Background(), "owned-delivery", value, evaluation, ""); state != "queued" {
+		t.Fatalf("concurrent foreground request inherited permission: %s", state)
+	}
+	unblock()
+	select {
+	case state := <-done:
+		if state != "retained" {
+			t.Fatalf("foreground report: %s", state)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("foreground report did not finish")
+	}
+	if requests.Load() != 1 || syncer.Snapshot().PendingReports != 0 {
+		t.Fatal("delivery was duplicated or left queued")
 	}
 }

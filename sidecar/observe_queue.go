@@ -122,34 +122,77 @@ func (s *Synchronizer) blockObserve(entry queuedObserve) error {
 }
 
 func (s *Synchronizer) enqueueObserve(entry queuedObserve) (queuedObserve, error) {
+	stored, _, err := s.enqueueObserveDelivery(entry, false)
+	return stored, err
+}
+
+// Queue persistence and delivery ownership are atomic so background replay cannot
+// race a new request's immediate upload. Ownership is process-local; disk state
+// survives a crash and the server still deduplicates accepted reports.
+func (s *Synchronizer) enqueueObserveDelivery(entry queuedObserve, claim bool) (queuedObserve, bool, error) {
 	if err := validateQueuedObserveBody(entry.Body); err != nil {
-		return queuedObserve{}, err
+		return queuedObserve{}, false, err
 	}
 	newFingerprint, _ := stableObserveFingerprint(entry.Body)
 	s.observeMu.Lock()
 	defer s.observeMu.Unlock()
 	if err := s.ensureObserveQueueLocked(); err != nil {
-		return queuedObserve{}, err
+		return queuedObserve{}, false, err
 	}
 	for _, existing := range s.observeQueue.Entries {
 		if existing.ActionKey == entry.ActionKey && existing.Phase == entry.Phase {
 			existingFingerprint, _ := stableObserveFingerprint(existing.Body)
 			if existingFingerprint == newFingerprint {
-				return existing, nil
+				return existing, claim && s.claimObserveLocked(existing), nil
 			}
-			return queuedObserve{}, errors.New("Observe action key and phase already have different queued input")
+			return queuedObserve{}, false, errors.New("Observe action key and phase already have different queued input")
 		}
 	}
 	if len(s.observeQueue.Entries)+len(s.observeQueue.Outcomes) >= maxObserveReports || len(entry.Body) > maxObserveReportBytes {
-		return queuedObserve{}, errors.New("Observe report queue is full")
+		return queuedObserve{}, false, errors.New("Observe report queue is full")
 	}
 	next := s.observeQueue
 	next.Entries = append(append([]queuedObserve{}, s.observeQueue.Entries...), entry)
 	if err := s.saveObserveQueueLocked(next); err != nil {
-		return queuedObserve{}, err
+		return queuedObserve{}, false, err
 	}
 	s.observeQueue = next
-	return entry, nil
+	return entry, claim && s.claimObserveLocked(entry), nil
+}
+
+func observeDeliveryKey(entry queuedObserve) string { return entry.ActionKey + "\x00" + entry.Phase }
+
+// Caller holds observeMu. No queue lock is held during the HTTP request.
+func (s *Synchronizer) claimObserveLocked(entry queuedObserve) bool {
+	if entry.BlockedReason != "" {
+		return false
+	}
+	key := observeDeliveryKey(entry)
+	if s.observeInFlight[key] {
+		return false
+	}
+	if s.observeInFlight == nil {
+		s.observeInFlight = make(map[string]bool)
+	}
+	s.observeInFlight[key] = true
+	return true
+}
+
+func (s *Synchronizer) claimQueuedObserve(entry queuedObserve) bool {
+	s.observeMu.Lock()
+	defer s.observeMu.Unlock()
+	for _, current := range s.observeQueue.Entries {
+		if current.ActionKey == entry.ActionKey && current.Phase == entry.Phase && bytes.Equal(current.Body, entry.Body) {
+			return s.claimObserveLocked(current)
+		}
+	}
+	return false
+}
+
+func (s *Synchronizer) releaseObserve(entry queuedObserve) {
+	s.observeMu.Lock()
+	delete(s.observeInFlight, observeDeliveryKey(entry))
+	s.observeMu.Unlock()
 }
 
 func (s *Synchronizer) acknowledgeObserve(entry queuedObserve) error {
@@ -250,18 +293,21 @@ func (s *Synchronizer) RetryObservations(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		retained, err := s.sendObserve(ctx, entry)
-		if err != nil {
-			if errors.Is(err, errExecutorKeyClosed) {
-				if blockErr := s.blockObserve(entry); blockErr == nil {
-					continue
-				}
-			}
-			failed = true
+		if !s.claimQueuedObserve(entry) {
 			continue
 		}
-		s.options.RuntimeLogs.decisionDelivered(entry, retained)
-		if err := s.acknowledgeObserve(entry); err != nil {
+		if err := func() error {
+			defer s.releaseObserve(entry)
+			retained, err := s.sendObserve(ctx, entry)
+			if errors.Is(err, errExecutorKeyClosed) {
+				return s.blockObserve(entry)
+			}
+			if err != nil {
+				return err
+			}
+			s.options.RuntimeLogs.decisionDelivered(entry, retained)
+			return s.acknowledgeObserve(entry)
+		}(); err != nil {
 			failed = true
 		}
 	}

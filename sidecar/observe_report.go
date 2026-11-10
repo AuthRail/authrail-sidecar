@@ -67,18 +67,23 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 	}
 	entry := queuedObserve{ActionKey: actionKey, Phase: request.Phase, Body: body, Traceparent: traceparent}
 	// Persist before upload so a process crash cannot turn an accepted check into a silent gap.
-	entry, err = s.enqueueObserve(entry)
+	var claimed bool
+	entry, claimed, err = s.enqueueObserveDelivery(entry, true)
 	if err != nil {
 		return retained, "unavailable"
 	}
 	if entry.BlockedReason != "" {
 		return retained, "unavailable"
 	}
+	if !claimed {
+		return retained, "queued"
+	}
+	defer s.releaseObserve(entry)
 	// Enforce must receive a retained Action before the executor can run. Allow
 	// the control plane's signing path a bounded window; Observe stays advisory.
 	deadline := 750 * time.Millisecond
 	if evaluation.Mode == "enforce" {
-		deadline = 2500 * time.Millisecond
+		deadline = 8 * time.Second
 	}
 	fastCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deadline)
 	defer cancel()
@@ -97,7 +102,7 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 func (s *Synchronizer) sendObserve(ctx context.Context, entry queuedObserve) (retainedObserve, error) {
 	var retained retainedObserve
 	base := strings.TrimRight(s.options.ControlPlaneURL, "/")
-	reportCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	reportCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(reportCtx, http.MethodPost,
 		base+"/runtime/deployment/observations", bytes.NewReader(entry.Body))

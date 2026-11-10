@@ -68,6 +68,7 @@ type Synchronizer struct {
 	status             string
 	lastSync           *time.Time
 	observeMu          sync.Mutex
+	observeInFlight    map[string]bool
 	observeQueue       observeQueueState
 	observeQueueLoaded bool
 	trajectoryMu       sync.Mutex
