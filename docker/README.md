@@ -1,15 +1,29 @@
-# Run the sidecar with Docker
+# Operator-managed Docker installation
 
-Use Docker to build and run the AuthRail sidecar without installing Go on
-your computer. AuthRail holds the reviewed rules and history; the sidecar
-checks calls locally beside your protected application. Complete the
-[AuthRail deployment prerequisites](../README.md#before-you-start) first.
+For a new application, use the [released guided Docker setup](https://docs.authrail.io/docs/docker).
+It downloads a pinned prebuilt image, saves credentials privately and checks the
+selected deployment without a source build or host Go compiler.
 
-You are building **a Docker image from source**, then starting a container
-from that image. Docker compiles the Go source inside a temporary build stage.
-You do not run `go build` on your machine or copy a native binary into Docker.
-There is no published AuthRail image for this setup yet; the tag below names
-an image you build locally, not one you pull from a registry.
+Use this recipe when your team builds a source revision or maintains its own
+Compose installation. The sidecar runs beside the protected application, while
+AuthRail supplies its Rails and stores the reports. Before continuing,
+[prepare the deployment](../README.md#prepare-one-action) and obtain its API
+address from the installation administrator. Your application will also need
+the SDK wrapper and a review of other routes to its tools and credentials.
+
+If you prefer a published image, the `0.2.0` image is
+`ghcr.io/authrail/authrail-sidecar@sha256:5ca550de03a591c42d490374229bca57980b3e000b7b86bb3366174b317b48b4`
+for Linux amd64/arm64. Released setup executable 0.2.0 instead pins the earlier
+Runtime image `sha256:cb6e60475146ead55bcec56d5da14fcc75e2bf7e776b584b01ace5426a5356f4`
+(internal version 0.1.0). The setup executable and running Runtime have
+separate versions. Check [compatibility](https://docs.authrail.io/docs/compatibility)
+before choosing one, especially if the Rails you want to use require newer
+SDK or Runtime features.
+
+The main recipe below builds **a local image from source**, then starts its
+container. Docker compiles Go inside a temporary build stage; you do not run
+`go build` on the host or copy a native binary into the image. A local build
+is not a published artifact.
 
 ## 1. Get the source and build the image
 
@@ -22,12 +36,12 @@ cd authrail-sidecar
 docker build -t authrail-sidecar:development .
 ```
 
-Run the rest of this guide from this repository directory. The trailing `.`
-tells Docker to use this checkout as the build context. The build downloads its
-Go builder image/modules and produces `authrail-sidecar:development` locally.
-It does not start a process, connect to your workspace, or publish the image.
-For a repeatable deployment, check out a reviewed commit before building.
-Native installation is an alternative in the [root README](../README.md#native-build-and-run).
+Run the remaining commands from this repository directory. The trailing `.`
+tells Docker which files to build. Docker downloads its Go builder image and
+modules, then creates the local image `authrail-sidecar:development`. You will
+start that image in step 3. Select the source commit under your team’s change
+process so the build can be reproduced later.
+For a host application, use the [native installation guide](https://docs.authrail.io/docs/native).
 
 The image contains the decision binary, a small credential/health launcher and
 public CA certificates. It runs as UID/GID `10001:10001` without a shell. The
@@ -37,27 +51,28 @@ and a 15-second stop grace period (the process allows five seconds for shutdown)
 
 ## 2. Prepare your AuthRail settings and private files
 
-Follow the root README's [credential preparation](../README.md#prepare-the-application-key-and-local-credentials)
-if you have not created the application key pair and local adapter token yet.
-Use an existing reviewed Observe deployment, its exact deployment credential,
-organisation/deployment IDs, independently verified signing-key fingerprint and
-the protected executor's registered Ed25519 public key. Keep the executor's
-private key and provider credentials exclusively in the protected application.
+Use an existing Observe deployment and copy its organisation ID, deployment
+ID and AuthRail signing-key fingerprint from the authenticated workspace. The
+sidecar needs that deployment’s credential and the public key registered for
+the application. The application keeps its private key and business-provider
+credentials. The [identity guide](https://docs.authrail.io/docs/identity) explains
+manual provisioning and the purpose of each credential.
 
-Place the deployment token, a separate random adapter token of at least 32
-characters, and executor public PEM in three private files outside the checkout.
-Files must be readable by UID 10001 in the container. On Linux, provision the
-files with ownership `10001:10001` and mode `0400`, and protect their parent
-directory; Compose file secrets do not automatically fix host permissions.
-Do not make credentials world-readable to solve a mount-permission failure.
-Docker Desktop file sharing may map permissions differently; verify readability
-without printing the files. Never put credentials in build arguments or image layers.
+If you already used guided setup, plan a migration before replacing it with
+this Compose project. It has its own state and credentials, which need to be
+preserved through that change.
 
-You need three files: the deployment credential from AuthRail, a separate
-random adapter token (at least 32 characters), and the registered executor public
-key. The executor's private key stays with your application. These files are
-created/provisioned by your operator; cloning this repository does not create
-them. Use absolute paths so Compose can mount the intended files.
+Your operator prepares three private files outside the checkout: the deployment
+token, a separate random adapter token of at least 32 characters, and the
+application’s public PEM key. Use absolute paths so Compose mounts the intended
+files. The application’s private key stays with the application.
+
+The sidecar user, UID 10001, must be able to read its mounted files. On Linux,
+use ownership `10001:10001`, mode `0400` and a protected parent directory.
+Compose mounts file secrets but does not repair host ownership. Docker Desktop
+can map permissions differently; check readability without printing secrets.
+Keep access limited to the required user rather than making files world-readable,
+and keep credentials out of build arguments and image layers.
 
 Set these shell variables to the paths and non-secret setup values. Replace
 all placeholders; the API origin comes from your AuthRail installation, and
@@ -106,9 +121,19 @@ To rebuild changed source and recreate the container deliberately, use
 recreate any executor sharing its network namespace as explained below.
 
 Run these commands from the repository root. The placeholders must be replaced
-with actual setup values. The default image tag is `authrail-sidecar:development`;
-set `AUTHRAIL_SIDECAR_IMAGE` to a reviewed immutable release tag/digest when one
-is available. To build separately:
+with actual setup values. The default image tag for this source recipe is
+`authrail-sidecar:development`. To use a reviewed published image instead of building,
+set an immutable digest and explicitly skip the Compose build:
+
+```sh
+export AUTHRAIL_SIDECAR_IMAGE=ghcr.io/authrail/authrail-sidecar@sha256:5ca550de03a591c42d490374229bca57980b3e000b7b86bb3366174b317b48b4
+docker pull "$AUTHRAIL_SIDECAR_IMAGE"
+docker compose -p authrail-runtime -f docker/compose.yaml up -d --no-build
+```
+
+Keep the selected image compatible with your SDK, API and required Rails. Do not
+apply a source-only requirement to an older image. To build a labelled source
+image separately:
 
 ```sh
 docker build --build-arg VERSION=YOUR_VERSION --build-arg REVISION=YOUR_REVISION -t authrail-sidecar:YOUR_VERSION .
@@ -160,12 +185,12 @@ services:
         condition: service_healthy
 ```
 
-The Node/Go adapter in that executor uses `http://127.0.0.1:7078` and its own
-mounted copy of the adapter token. Mount its Ed25519 private key and provider
-credentials only into the executor. This example intentionally does not invent
-an executor image or its application-specific secret configuration. Its real
-authentication, tool interception, effect idempotency and result checks must
-be implemented using the reviewed SDK/HTTP protocol.
+Your application image should include the Node.js, Go or Python SDK around
+the function that performs the work. Configure it to use `http://127.0.0.1:7078`
+and mount its adapter token, private signing key and provider credentials where
+the application expects them. Only that application container needs the private
+key and provider credentials. Follow the SDK guide for caller authentication,
+request checks, provider idempotency and result handling.
 
 Both containers share a network namespace, not a filesystem. They cannot use the
 same listening ports. Publish only your application's necessary ingress ports
@@ -212,10 +237,12 @@ before routing calls. Rollback replaces the binary image and retains the latest
 state, never an older queue or lower sequence. If that binary cannot read the
 state, leave Enforce stopped and resolve compatibility rather than resetting it.
 
-An outage can leave bounded reports queued on disk. Enforce SDKs require central
-retention for protected decisions and a retained started receipt before an
-effect, so a cached bundle does not guarantee continued execution. Observe
-remains advisory. A lost completion report requires the protected application's
-provider lookup and reconciliation; restarting the sidecar never retries the
-business operation. Inspect pending/blocked reports and recording gaps after
-recovery. A healthy container never proves that a provider effect occurred.
+During an outage, reports can remain queued on disk. Enforce still waits for
+AuthRail to save permission and the execution-start report, even if the sidecar
+has cached rules. Observe continues running the function. After service returns,
+inspect pending and blocked reports and investigate any recording gaps.
+
+If a completion report was lost, the application needs to check the provider
+and reconcile the outcome before considering another attempt. Restarting the
+sidecar resumes report delivery, not the business operation; the provider’s
+record remains the place to establish its effect independently.
