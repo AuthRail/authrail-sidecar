@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+const maxEvaluationRequestBytes = 512 * 1024
+
 var actionKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 var identityRefPattern = actionKeyPattern
 
@@ -38,7 +40,7 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string, telemetry ...*
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+		r.Body = http.MaxBytesReader(w, r.Body, maxEvaluationRequestBytes)
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
 		decoder.UseNumber()

@@ -113,7 +113,7 @@ func ExecutionReceiptHandler(syncer *Synchronizer, adapterToken string, telemetr
 			State     string `json:"state"`
 			Replayed  bool   `json:"replayed"`
 		}
-		if json.NewDecoder(io.LimitReader(response.Body, 2048)).Decode(&retained) != nil ||
+		if decodeControlPlaneResponse(response.Body, 2048, &retained) != nil ||
 			!approvalUUID.MatchString(retained.ReceiptID) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return

@@ -3,12 +3,52 @@ package sidecar
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Individually valid call/result objects must fit the envelope after execution.
+func TestEvaluationEnvelopeAccommodatesBoundedArgumentsAndResult(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	request := call(50)
+	request.Phase = "tool_result"
+	object := json.RawMessage(`{"padding":"` + strings.Repeat("x", 64*1024-len(`{"padding":""}`)) + `"}`)
+	request.Arguments, request.Result = object, object
+	body, err := json.Marshal(signedCall(t, syncer, request, "bounded-result"))
+	if err != nil || len(body) <= 128*1024 {
+		t.Fatalf("fixture must exceed old envelope bound: %d %v", len(body), err)
+	}
+	server := httptest.NewServer(EvaluationHandler(syncer, "adapter-token"))
+	defer server.Close()
+	post := func(body []byte) int {
+		t.Helper()
+		r, err := http.NewRequest(http.MethodPost, server.URL, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer adapter-token")
+		r.Header.Set("Idempotency-Key", "bounded-result")
+		response, err := server.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		_, _ = io.Copy(io.Discard, response.Body)
+		return response.StatusCode
+	}
+	if status := post(body); status != http.StatusOK {
+		t.Fatalf("valid bounded result rejected by envelope: HTTP %d", status)
+	}
+	// Whitespace still consumes the transport budget even after a valid object.
+	oversized := append(append([]byte(nil), body...), bytes.Repeat([]byte(" "), 512*1024-len(body)+1)...)
+	if status := post(oversized); status != http.StatusBadRequest {
+		t.Fatalf("oversized evaluation envelope accepted: HTTP %d", status)
+	}
+}
 
 // The local evaluation listener returns permission, never executes a business effect.
 // This fixture keeps the provider credential behind a separate protected executor.

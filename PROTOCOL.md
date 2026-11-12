@@ -49,9 +49,24 @@ Go SDK source and the signed proof tests as executable examples. A customer
 adapter must reproduce those bytes exactly; an imported OpenAPI operation or
 agent-supplied argument is not a reviewed executor contract.
 
+Numeric evaluation uses finite binary64 values and their canonical JSON decimal
+representation. Exact incoming number literals must preserve their numeric value
+through that representation; a value such as `9007199254740993` must be rejected,
+not checked as a rounded neighbour while the protected callback receives the
+original integer. The Go SDK rejects lossy literals before signing; the sidecar
+rejects raw lossy arguments/results before evaluation. Python rejects integers outside its safe JSON integer range; Node
+numbers already use binary64. Use reviewed string fields for exact identifiers
+or quantities outside that numeric contract. This does not add arbitrary-precision
+evaluation or change the callback's arguments silently.
+
 For `tool_result`, reuse the same request ID, action key, exact Operation,
 attribution, facts, and trajectory; add a bounded JSON object `result` and
-sign a new phase proof. A call decision never proves that the tool ran. In
+sign a new phase proof. Arguments and result are each limited to 64 KiB.
+The complete evaluation request is limited to 512 KiB so both objects can fit
+alongside bounded facts, Guard evidence, contextual findings and identity proof.
+SDK prepared context and sidecar responses retain their 128 KiB limits; the
+larger request envelope does not expand any individual value's limit.
+A call decision never proves that the tool ran. In
 Observe, both decisions are advisory. In Enforce, the adapter may invoke its
 protected executor only after a fresh covered `allow` with
 `recordingStatus: retained` and `reportReplayed: false`. Missing, queued,

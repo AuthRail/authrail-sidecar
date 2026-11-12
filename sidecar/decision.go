@@ -1,10 +1,8 @@
 package sidecar
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"strings"
 )
 
@@ -676,19 +674,7 @@ func resolveIdentity(f field, args, result map[string]any, attribution Attributi
 }
 
 func object(raw json.RawMessage) (map[string]any, error) {
-	if len(raw) == 0 || len(raw) > 64*1024 {
-		return nil, errors.New("object size is invalid")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	var value map[string]any
-	if err := decoder.Decode(&value); err != nil || value == nil {
-		return nil, errors.New("object is invalid")
-	}
-	var trailing any
-	if decoder.Decode(&trailing) != io.EOF {
-		return nil, errors.New("object has trailing data")
-	}
-	return value, nil
+	return decodeInputObject(raw)
 }
 
 func contains(values []string, wanted string) bool {

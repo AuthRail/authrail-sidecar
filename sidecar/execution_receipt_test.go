@@ -16,6 +16,7 @@ func TestExecutionReceiptRequiresAdapterAndForwardsOnce(t *testing.T) {
 	const receiptID = "00000000-0000-4000-8000-000000000003"
 	posts := 0
 	reject := false
+	responseSuffix := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		posts++
 		if reject {
@@ -30,6 +31,7 @@ func TestExecutionReceiptRequiresAdapterAndForwardsOnce(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"receiptId": receiptID, "state": "executing", "replayed": false})
+		_, _ = w.Write([]byte(responseSuffix))
 	}))
 	defer server.Close()
 	syncer := &Synchronizer{options: Options{ControlPlaneURL: server.URL,
@@ -58,6 +60,17 @@ func TestExecutionReceiptRequiresAdapterAndForwardsOnce(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated || posts != 1 {
 		t.Fatalf("receipt was not forwarded exactly once: %d %d", response.Code, posts)
+	}
+	for _, suffix := range []string{`{}`, strings.Repeat(" ", 2048)} {
+		responseSuffix = suffix
+		request = httptest.NewRequest(http.MethodPost, "/execution-receipts", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("c", 32))
+		request.Header.Set("Idempotency-Key", actionID+":"+attemptID+":started")
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("invalid control-plane receipt prefix accepted: HTTP %d", response.Code)
+		}
 	}
 	// Rejected forwarding must not manufacture a retained execution log.
 	reject = true

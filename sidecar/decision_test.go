@@ -24,6 +24,45 @@ import (
 const decisionOperationID = "00000000-0000-4000-8000-000000000008"
 const decisionRequestID = "00000000-0000-4000-8000-000000000009"
 
+// A raw client must not obtain a decision over a silently rounded argument or result.
+func TestEvaluationRejectsLossyJSONNumbers(t *testing.T) {
+	syncer := decisionSynchronizer(t, nil)
+	for _, number := range []string{"9007199254740993", "-9007199254740993", "9007199254740993.0", "9.007199254740993e15", "0.10000000000000001", "1e-1000000000"} {
+		t.Run(number, func(t *testing.T) {
+			request := call(1)
+			request.Arguments = json.RawMessage(`{"nested":[{"amount":` + number + `}]}`)
+			if _, err := syncer.Evaluate(request); err == nil {
+				t.Fatal("silently rounded call was evaluated")
+			}
+			request.Result = request.Arguments
+			request.Arguments = json.RawMessage(`{"amount":1}`)
+			request.Phase = "tool_result"
+			if _, err := syncer.Evaluate(request); err == nil {
+				t.Fatal("silently rounded result was evaluated")
+			}
+		})
+	}
+}
+
+func TestInputNumbersPreserveOrdinaryCanonicalBytes(t *testing.T) {
+	for _, test := range []struct{ input, expected string }{
+		{`{"amount":0.1}`, `{"amount":0.1}`},
+		{`{"amount":9007199254740992}`, `{"amount":9007199254740992}`},
+		{`{"amount":9007199254740994}`, `{"amount":9007199254740994}`},
+		{`{"amount":1.2300e2}`, `{"amount":123}`},
+		{`{"amount":0e-1000000000}`, `{"amount":0}`},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			request := call(1)
+			request.Arguments = json.RawMessage(test.input)
+			encoded, err := observeInputBytes(request)
+			if err != nil || !bytes.Contains(encoded, []byte(`"arguments":`+test.expected)) {
+				t.Fatalf("canonical value changed: %s %v", encoded, err)
+			}
+		})
+	}
+}
+
 func TestGuardProcessingCannotBeClearedByMissingStaleOrChangedEvidence(t *testing.T) {
 	requirement := GuardObligation{Kind: "sanitize", HandlerID: "redact", HandlerVersion: strings.Repeat("a", 64),
 		Target: GuardTarget{Root: "arguments", Path: []string{"message"}}}

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -125,14 +124,14 @@ func (s *Synchronizer) sendObserve(ctx context.Context, entry queuedObserve) (re
 			var problem struct {
 				Code string `json:"code"`
 			}
-			if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&problem) == nil &&
+			if decodeControlPlaneResponse(response.Body, 4096, &problem) == nil &&
 				problem.Code == "EXECUTOR_KEY_CLOSED" {
 				return retained, errExecutorKeyClosed
 			}
 		}
 		return retained, errors.New("control plane did not retain the Observe report")
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&retained); err != nil ||
+	if err := decodeControlPlaneResponse(response.Body, 4096, &retained); err != nil ||
 		!uuidPattern.MatchString(retained.ActionID) ||
 		!uuidPattern.MatchString(retained.CertificateID) ||
 		(retained.ApprovalRequestID != nil &&

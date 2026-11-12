@@ -175,7 +175,7 @@ func (s *Synchronizer) sendExecutionOutcome(ctx context.Context, entry queuedExe
 	if response.StatusCode != http.StatusCreated {
 		return retained, errors.New("outcome not retained")
 	}
-	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&retained) != nil || !uuidPattern.MatchString(retained.ReceiptID) || !uuidPattern.MatchString(retained.ActionID) {
+	if decodeControlPlaneResponse(response.Body, 4096, &retained) != nil || !uuidPattern.MatchString(retained.ReceiptID) || !uuidPattern.MatchString(retained.ActionID) {
 		return retained, errors.New("outcome response invalid")
 	}
 	retained.RecordingStatus = "retained"
