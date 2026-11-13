@@ -229,3 +229,43 @@ Unresolved effects remain unknown until explicit provider reconciliation.
 Central receipt retention stores the exact signed statement, signature, and
 public-key snapshot. Older receipts without that retained assertion must remain
 identifiable as older evidence; never synthesize a signature for them.
+
+## Hosted evaluator (current source)
+
+The separate `authrail-hosted-sidecar` command serves private Unix HTTP. It is not
+an alternate public MCP listener or the released customer-side adapter. The API
+supplies trusted configuration and executor keys; agents cannot select this socket,
+signing pins or deployment identity. There is no TCP listener or provider credential.
+
+Evaluate an exact request using the existing Go Rail engine.
+`POST /evaluate`
+
+The API envelope contains organisationId, deploymentId, bundleId, sequence,
+configurationSha256, actionKey, the existing signed EvaluationRequest as request,
+and optional requestJSON containing the exact original HTTP JSON bytes. The API
+forwards those bytes so an earlier JavaScript parse cannot round signed numbers.
+The envelope also includes
+executorPublicKeys (base64url Ed25519) and trustedPins (SPKI SHA-256). An optional
+configuration string contains exact JSON configuration bytes matching its digest.
+A cache miss returns 409 with code CONFIGURATION_REQUIRED. The API may resend that
+same request once with its configuration. Responses echo the binding, requestId and
+actionKey and include evaluation plus the existing metadata-only ObserveIntake as
+report. Unavailable/uncovered configuration returns no retainable report. The API
+owns the final authority check and durable retention; the sidecar never reports
+back to the API or opens business journals in this mode.
+
+Read bounded warm configuration identities for authoritative reconciliation.
+`GET /cache/bindings`
+
+Evict scoped configurations using an array of organisationId/deploymentId pairs.
+`POST /cache/invalidate`
+
+Check process liveness over the same private socket.
+`GET /health/live`
+
+The cache is replaceable, bounded and isolated by tenant/deployment/version/digest.
+Each request supplies current signer/executor trust, even on a cache hit. Cache
+invalidation does not grant permission. Complete client trajectories stay unverified;
+rules needing complete history cannot pass without the future durable history owner.
+Each replica needs its own socket/volume and configured API monitor. No socket or
+file journal is shared as durable session/trajectory state.

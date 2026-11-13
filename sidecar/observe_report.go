@@ -30,37 +30,7 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 		evaluation.BundleID == nil || evaluation.Coverage != "evaluated" {
 		return retained, "unavailable"
 	}
-	input, err := observeInputBytes(request)
-	if err != nil {
-		return retained, "unavailable"
-	}
-	digest := sha256.Sum256(input)
-	effectInput, err := observeEffectInputBytes(request)
-	if err != nil {
-		return retained, "unavailable"
-	}
-	effectDigest := sha256.Sum256(effectInput)
-	body, err := json.Marshal(struct {
-		FormatVersion        int                  `json:"formatVersion"`
-		InputSHA256          string               `json:"inputSha256"`
-		EffectInputSHA256    string               `json:"effectInputSha256"`
-		Attribution          Attribution          `json:"attribution"`
-		IdentityVerification IdentityVerification `json:"identityVerification"`
-		ExecutorProof        IdentityProof        `json:"executorProof"`
-		ReviewSummary        *ReviewSummary       `json:"reviewSummary,omitempty"`
-		Report               struct {
-			OperationVersionID string     `json:"operationVersionId"`
-			Phase              string     `json:"phase"`
-			Evaluation         Evaluation `json:"evaluation"`
-		} `json:"report"`
-	}{FormatVersion: 1, InputSHA256: hex.EncodeToString(digest[:]),
-		EffectInputSHA256: hex.EncodeToString(effectDigest[:]),
-		Attribution:       request.Attribution, IdentityVerification: s.identityVerification(request, actionKey),
-		ExecutorProof: request.IdentityProof, ReviewSummary: request.ReviewSummary, Report: struct {
-			OperationVersionID string     `json:"operationVersionId"`
-			Phase              string     `json:"phase"`
-			Evaluation         Evaluation `json:"evaluation"`
-		}{request.OperationVersionID, request.Phase, evaluation}})
+	body, err := s.observeIntake(actionKey, request, evaluation)
 	if err != nil {
 		return retained, "unavailable"
 	}
@@ -96,6 +66,45 @@ func (s *Synchronizer) retainObserve(ctx context.Context, actionKey string,
 	}
 	_ = s.acknowledgeObserve(entry)
 	return retained, "retained"
+}
+
+// observeIntake builds metadata only; the caller owns durable retention.
+func (s *Synchronizer) observeIntake(actionKey string, request EvaluationRequest, evaluation Evaluation) ([]byte, error) {
+	input, err := observeInputBytes(request)
+	if err != nil {
+		return nil, errors.New("evaluation report is invalid")
+	}
+	digest := sha256.Sum256(input)
+	effectInput, err := observeEffectInputBytes(request)
+	if err != nil {
+		return nil, errors.New("evaluation report is invalid")
+	}
+	effectDigest := sha256.Sum256(effectInput)
+	body, err := json.Marshal(struct {
+		FormatVersion        int                  `json:"formatVersion"`
+		InputSHA256          string               `json:"inputSha256"`
+		EffectInputSHA256    string               `json:"effectInputSha256"`
+		Attribution          Attribution          `json:"attribution"`
+		IdentityVerification IdentityVerification `json:"identityVerification"`
+		ExecutorProof        IdentityProof        `json:"executorProof"`
+		ReviewSummary        *ReviewSummary       `json:"reviewSummary,omitempty"`
+		Report               struct {
+			OperationVersionID string     `json:"operationVersionId"`
+			Phase              string     `json:"phase"`
+			Evaluation         Evaluation `json:"evaluation"`
+		} `json:"report"`
+	}{FormatVersion: 1, InputSHA256: hex.EncodeToString(digest[:]),
+		EffectInputSHA256: hex.EncodeToString(effectDigest[:]),
+		Attribution:       request.Attribution, IdentityVerification: s.identityVerification(request, actionKey),
+		ExecutorProof: request.IdentityProof, ReviewSummary: request.ReviewSummary, Report: struct {
+			OperationVersionID string     `json:"operationVersionId"`
+			Phase              string     `json:"phase"`
+			Evaluation         Evaluation `json:"evaluation"`
+		}{request.OperationVersionID, request.Phase, evaluation}})
+	if err != nil {
+		return nil, errors.New("evaluation report is invalid")
+	}
+	return body, nil
 }
 
 func (s *Synchronizer) sendObserve(ctx context.Context, entry queuedObserve) (retainedObserve, error) {

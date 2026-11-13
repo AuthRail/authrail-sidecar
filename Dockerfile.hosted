@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.26-alpine AS build
+ARG VERSION=development
+ARG REVISION=unknown
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY sidecar ./sidecar
+COPY internal ./internal
+COPY cmd/authrail-hosted-sidecar ./cmd/authrail-hosted-sidecar
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${VERSION} -X main.revision=${REVISION}" -o /out/authrail-hosted-sidecar ./cmd/authrail-hosted-sidecar \
+ && mkdir -p /out/run/authrail && chmod 0750 /out/run/authrail
+FROM scratch
+ARG VERSION=development
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="AuthRail Hosted Sidecar" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
+COPY --from=build /out/authrail-hosted-sidecar /usr/local/bin/authrail-hosted-sidecar
+COPY --from=build --chown=10001:10001 /out/run/ /run/
+USER 10001:10001
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/authrail-hosted-sidecar"]

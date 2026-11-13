@@ -27,6 +27,11 @@ that performs the work, and keep its credentials out of the agent’s reach.
 [First application](https://docs.authrail.io/docs/getting-started) ·
 [Compatibility](https://docs.authrail.io/docs/compatibility)
 
+Current source also includes an AuthRail-operated hosted evaluator. The API uses
+the same Go engine over private Unix HTTP and owns decision retention. Its memory
+cache is replaceable; it does not use local business journals. This is separate
+from the released customer-hosted setup. See [the hosted contract](PROTOCOL.md#hosted-evaluator-current-source).
+
 ## Choose a version
 
 The setup executable and native Runtime are released as **0.2.0**. The Node.js,
