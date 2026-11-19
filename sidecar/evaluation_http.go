@@ -3,6 +3,7 @@ package sidecar
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
@@ -66,6 +67,10 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string, telemetry ...*
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if err := syncer.checkExpectedBundle(request.ExpectedBundle); err != nil {
+			writeEvaluationPreparationError(w, err)
+			return
+		}
 		syncer.trajectoryMu.Lock()
 		if err := syncer.verifyTrajectoryLocked(&request, r.Header.Get("Idempotency-Key")); err != nil {
 			syncer.trajectoryMu.Unlock()
@@ -75,18 +80,38 @@ func EvaluationHandler(syncer *Synchronizer, adapterToken string, telemetry ...*
 		evaluation, err := syncer.Evaluate(request)
 		if err != nil {
 			syncer.trajectoryMu.Unlock()
-			w.WriteHeader(http.StatusBadRequest)
+			writeEvaluationPreparationError(w, err)
 			return
 		}
-		if err := syncer.recordTrajectoryResultLocked(request, r.Header.Get("Idempotency-Key"), evaluation); err != nil {
+		trajectoryErr := syncer.recordTrajectoryResultLocked(request, r.Header.Get("Idempotency-Key"), evaluation)
+		pendingRenewal := errors.Is(trajectoryErr, errTrajectoryRenewal)
+		if trajectoryErr != nil && !pendingRenewal {
 			_ = syncer.markTrajectoryGapLocked(request)
 			syncer.trajectoryMu.Unlock()
 			writeTrajectoryUnavailable(w, request, syncer.Snapshot().Mode, telemetry...)
 			return
 		}
 		syncer.trajectoryMu.Unlock()
-		if retained, status := syncer.retainObserve(r.Context(),
-			r.Header.Get("Idempotency-Key"), request, evaluation, traceparent); status == "retained" {
+		retained, status := syncer.retainObserve(r.Context(), r.Header.Get("Idempotency-Key"), request, evaluation, traceparent)
+		if pendingRenewal {
+			// Do not hold the local trajectory lock across the control-plane call.
+			// Failed or ambiguous retention never supplies a new prior-read fact.
+			syncer.trajectoryMu.Lock()
+			if status != "retained" || !uuidPattern.MatchString(retained.ActionID) || !uuidPattern.MatchString(retained.CertificateID) {
+				_ = syncer.markTrajectoryGapLocked(request)
+				syncer.trajectoryMu.Unlock()
+				writeTrajectoryUnavailable(w, request, syncer.Snapshot().Mode, telemetry...)
+				return
+			}
+			if err := syncer.recordTrajectoryResultLocked(request, r.Header.Get("Idempotency-Key"), evaluation, retained.CertificateID); err != nil {
+				_ = syncer.markTrajectoryGapLocked(request)
+				syncer.trajectoryMu.Unlock()
+				writeTrajectoryUnavailable(w, request, syncer.Snapshot().Mode, telemetry...)
+				return
+			}
+			syncer.trajectoryMu.Unlock()
+		}
+		if status == "retained" {
 			evaluation.RecordingStatus = status
 			evaluation.ActionID = retained.ActionID
 			evaluation.ApprovalRequestID = retained.ApprovalRequestID
@@ -117,4 +142,14 @@ func writeTrajectoryUnavailable(w http.ResponseWriter, request EvaluationRequest
 			Outcome: "additional_context_required", Recording: "unavailable"})
 	}
 	_ = json.NewEncoder(w).Encode(evaluation)
+}
+
+func writeEvaluationPreparationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errConfigurationChanged) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"configuration_changed"}`))
+		return
+	}
+	w.WriteHeader(http.StatusBadRequest)
 }

@@ -166,7 +166,28 @@ path between instances or reset these files as a recovery shortcut.
 
 The authenticated local `POST /approval-permits/status` route forwards a fresh
 `authrail.approval.status.v1` executor proof using the deployment credential.
-It returns only matching Action/approval IDs, review state and expiry. Status
-polling never votes, issues a permit or consumes an approval. Its signature purpose
+It returns only matching Action/approval IDs, durable review state, freshness and
+expiry. Pending requests remain visible after their supporting facts expire.
+`permit_issued` identifies an unused permission; `superseded` preserves old review
+history. Missing freshness is unavailable, never assumed fresh. Status polling
+never votes, issues a permit or consumes an approval. Its signature purpose
 is distinct from a claim. The protected application still uses the ordinary SDK
 claim/recovery and retained-start flow before calling a business function.
+
+## Prepared configuration changes
+
+Local evaluation accepts an optional `expectedBundle` containing the bundle ID
+and sequence used for Guard, Data and contextual preparation. A different selected
+verified bundle returns HTTP409 with `configuration_changed` before decision/report
+retention. This is a denial-only condition; it grants no authority and does not
+change signed business input. A customer SDK may prepare again once from original
+input and refresh facts. It never repeats execution start or a business operation.
+The evaluator checks the selected bundle again to cover concurrent synchronization;
+ordinary failure, denial and ambiguous transport errors do not permit this retry.
+
+A read result crossing a bundle renewal keeps its actual result bundle and the
+original call bundle separately in the private trajectory ledger. A central
+retained Enforce result certificate is required for that link: the API checks
+original call freshness, same attempt and current authority generation. Local
+bundle IDs alone cannot establish equivalence. Failed/ambiguous retention leaves
+a history gap and withholds the result. Observe keeps exact bundle continuity.

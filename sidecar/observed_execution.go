@@ -67,7 +67,7 @@ func validObservedReceipt(r observedExecutionReceipt) bool {
 	if !uuidPattern.MatchString(r.OperationVersionID) || !uuidPattern.MatchString(r.AttemptID) ||
 		!actionKeyPattern.MatchString(r.ActionKey) || !actionKeyPattern.MatchString(r.ProviderIdempotencyKey) ||
 		!guardDigest.MatchString(r.InputSHA256) || !guardDigest.MatchString(r.KeySHA256) ||
-		(r.ProviderReference != nil && !actionKeyPattern.MatchString(*r.ProviderReference)) ||
+		(r.ProviderReference != nil && !validProviderReference(*r.ProviderReference)) ||
 		r.Proof.IssuedAt <= 0 || r.Proof.ExpiresAt <= r.Proof.IssuedAt || r.Proof.ExpiresAt-r.Proof.IssuedAt > 30 {
 		return false
 	}
@@ -230,7 +230,7 @@ func ObservedExecutionReceiptHandler(s *Synchronizer, adapterToken string, telem
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()

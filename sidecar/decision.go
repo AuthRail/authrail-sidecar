@@ -7,8 +7,17 @@ import (
 )
 
 // Evaluation is advisory in Observe. It never authorizes execution.
+// ExpectedBundle is a denial-only preparation fence, never execution authority.
+type ExpectedBundle struct {
+	BundleID string `json:"bundleId"`
+	Sequence int64  `json:"sequence"`
+}
+
+var errConfigurationChanged = errors.New("prepared configuration changed")
+
 type EvaluationRequest struct {
 	FormatVersion      int                 `json:"formatVersion"`
+	ExpectedBundle     *ExpectedBundle     `json:"expectedBundle,omitempty"`
 	RequestID          string              `json:"requestId"`
 	OperationVersionID string              `json:"operationVersionId"`
 	Phase              string              `json:"phase"`
@@ -133,7 +142,7 @@ type ruleResult struct {
 }
 
 func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
-	if request.FormatVersion != 1 || !uuidPattern.MatchString(request.RequestID) ||
+	if request.FormatVersion != 1 || !validExpectedBundle(request.ExpectedBundle) || !uuidPattern.MatchString(request.RequestID) ||
 		!uuidPattern.MatchString(request.OperationVersionID) ||
 		(request.Phase != "tool_call" && request.Phase != "tool_result") ||
 		len(request.FactResolutions) > 100 || len(request.ContextualFindings) > 8 || !validGuardEvidence(request.GuardEvidence, request.Phase) {
@@ -176,6 +185,10 @@ func (s *Synchronizer) Evaluate(request EvaluationRequest) (Evaluation, error) {
 		s.options.DeploymentID, s.options.TrustedPins, s.options.Now())
 	if err != nil || manifest == nil || manifest.Sequence < floor {
 		return response, nil
+	}
+	// Never retain a decision made against a different prepared selection.
+	if request.ExpectedBundle != nil && (request.ExpectedBundle.BundleID != manifest.BundleID || request.ExpectedBundle.Sequence != manifest.Sequence) {
+		return Evaluation{}, errConfigurationChanged
 	}
 	response.Mode = manifest.Mode
 	response.BundleID = &manifest.BundleID
@@ -684,4 +697,24 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func validExpectedBundle(expected *ExpectedBundle) bool {
+	return expected == nil || uuidPattern.MatchString(expected.BundleID) && expected.Sequence > 0
+}
+
+// Check before trajectory work, then Evaluate rechecks its selected verified manifest.
+func (s *Synchronizer) checkExpectedBundle(expected *ExpectedBundle) error {
+	if !validExpectedBundle(expected) {
+		return errors.New("prepared configuration is invalid")
+	}
+	if expected == nil {
+		return nil
+	}
+	current := s.Snapshot()
+	if current.BundleValid && current.ActiveBundleID != nil &&
+		(*current.ActiveBundleID != expected.BundleID || current.Sequence != expected.Sequence) {
+		return errConfigurationChanged
+	}
+	return nil
 }

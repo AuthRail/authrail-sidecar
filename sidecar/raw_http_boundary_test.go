@@ -271,3 +271,62 @@ func TestRawHTTPDecisionAndProtectedEffectBoundary(t *testing.T) {
 		t.Fatalf("expired bundle caused another effect: %d", effects)
 	}
 }
+
+// A preparation fence must reject a changed bundle before any central report exists.
+func TestPreparedBundleMismatchNeverRetainsDecision(t *testing.T) {
+	policy := decisionRail("00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "policy", []map[string]any{{"id": "allow", "phase": "tool_call", "when": decisionCondition("lte", 100), "outcome": "allow"}})
+	syncer := decisionSynchronizerMode(t, []map[string]any{policy}, "enforce")
+	reports := 0
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reports++
+		if r.URL.Path != "/runtime/deployment/observations" {
+			t.Error("unexpected remote path")
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"actionId": "00000000-0000-4000-8000-000000000020", "certificateId": "00000000-0000-4000-8000-000000000021", "replayed": false})
+	}))
+	defer control.Close()
+	syncer.options.ControlPlaneURL, syncer.options.Token, syncer.options.Client = control.URL, "deployment-secret", control.Client()
+	handler := EvaluationHandler(syncer, "adapter-token")
+	perform := func(request EvaluationRequest) *httptest.ResponseRecorder {
+		request = signedCall(t, syncer, request, "prepared-bundle")
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		httpRequest := httptest.NewRequest(http.MethodPost, "/evaluate", bytes.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer adapter-token")
+		httpRequest.Header.Set("Idempotency-Key", "prepared-bundle")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httpRequest)
+		return response
+	}
+	for _, phase := range []string{"tool_call", "tool_result"} {
+		request := call(50)
+		request.Phase = phase
+		if phase == "tool_result" {
+			request.Result = json.RawMessage(`{"status":"done"}`)
+		}
+		for _, expectation := range []ExpectedBundle{{BundleID: decisionRequestID, Sequence: 1}, {BundleID: bundleID, Sequence: 2}} {
+			request.ExpectedBundle = &expectation
+			response := perform(request)
+			if response.Code != 409 || strings.TrimSpace(response.Body.String()) != `{"code":"configuration_changed"}` || reports != 0 || syncer.Snapshot().PendingReports != 0 {
+				t.Fatalf("mismatched preparation retained state: %d %s %d", response.Code, response.Body.String(), reports)
+			}
+		}
+	}
+	request := call(50)
+	request.ExpectedBundle = &ExpectedBundle{BundleID: bundleID, Sequence: 0}
+	if response := perform(request); response.Code != 400 || reports != 0 {
+		t.Fatal("invalid expectation was not rejected")
+	}
+	request.ExpectedBundle = &ExpectedBundle{BundleID: bundleID, Sequence: 1}
+	response := perform(request)
+	if response.Code != 200 || reports != 1 {
+		t.Fatalf("fresh exact preparation failed: %d %s %d", response.Code, response.Body.String(), reports)
+	}
+	var decision Evaluation
+	if json.Unmarshal(response.Body.Bytes(), &decision) != nil || decision.RecordingStatus != "retained" || decision.Outcome != "allow" {
+		t.Fatalf("fresh preparation did not retain exact decision: %s", response.Body.String())
+	}
+}

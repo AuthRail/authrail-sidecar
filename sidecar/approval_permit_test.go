@@ -120,6 +120,8 @@ func TestApprovalStatusPreservesExactBindingWithoutClaiming(t *testing.T) {
 	const requestID = "00000000-0000-4000-8000-000000000002"
 	reads := 0
 	wrong := false
+	state := "pending"
+	freshField := true
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reads++
 		if r.URL.Path != "/runtime/deployment/approval-permits/status" || r.Header.Get("Authorization") != "Bearer deployment-secret" {
@@ -133,7 +135,11 @@ func TestApprovalStatusPreservesExactBindingWithoutClaiming(t *testing.T) {
 		if wrong {
 			id = requestID
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"actionId": id, "approvalRequestId": requestID, "state": "pending", "expiresAt": time.Now().Add(time.Minute), "privateReviewMaterial": "not for the connector"})
+		payload := map[string]any{"actionId": id, "approvalRequestId": requestID, "state": state, "expiresAt": time.Now().Add(-time.Minute), "privateReviewMaterial": "not for the connector"}
+		if freshField {
+			payload["requiresRefresh"] = true
+		}
+		_ = json.NewEncoder(w).Encode(payload)
 	}))
 	defer server.Close()
 	syncer := &Synchronizer{options: Options{ControlPlaneURL: server.URL, Token: "deployment-secret", Client: server.Client()}}
@@ -155,8 +161,20 @@ func TestApprovalStatusPreservesExactBindingWithoutClaiming(t *testing.T) {
 	if response := perform(true); response.Code != 200 || reads != 1 || strings.Contains(response.Body.String(), "privateReviewMaterial") {
 		t.Fatal("status was not bounded metadata")
 	}
+	for _, value := range []string{"permit_issued", "superseded"} {
+		state = value
+		response := perform(true)
+		if response.Code != 200 || !strings.Contains(response.Body.String(), `"requiresRefresh":true`) {
+			t.Fatalf("durable status/freshness lost for %s: %d %s", value, response.Code, response.Body.String())
+		}
+	}
+	freshField = false
+	if response := perform(true); response.Code != 503 {
+		t.Fatal("missing freshness was treated as fresh")
+	}
+	freshField = true
 	wrong = true
-	if response := perform(true); response.Code != 503 || reads != 2 {
+	if response := perform(true); response.Code != 503 || reads != 5 {
 		t.Fatal("unrelated Action status accepted")
 	}
 }

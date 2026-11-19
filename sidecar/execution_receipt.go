@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type executionReceipt struct {
@@ -45,7 +46,7 @@ func ExecutionReceiptHandler(syncer *Synchronizer, adapterToken string, telemetr
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
@@ -57,13 +58,18 @@ func ExecutionReceiptHandler(syncer *Synchronizer, adapterToken string, telemetr
 			!approvalDigest.MatchString(receipt.KeySHA256) ||
 			!actionKeyPattern.MatchString(receipt.ProviderIdempotencyKey) ||
 			(receipt.ProviderReference != nil &&
-				!actionKeyPattern.MatchString(*receipt.ProviderReference)) {
+				!validProviderReference(*receipt.ProviderReference)) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		switch receipt.Event {
 		case "started", "succeeded", "failed", "unknown", "reconciled_succeeded", "reconciled_failed":
 		default:
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if receipt.Event == "started" && receipt.ProviderReference != nil ||
+			strings.HasPrefix(receipt.Event, "reconciled_") && receipt.ProviderReference == nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -125,4 +131,17 @@ func ExecutionReceiptHandler(syncer *Synchronizer, adapterToken string, telemetr
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(retained)
 	})
+}
+
+// A reference is retained evidence only; it must never select an execution endpoint.
+func validProviderReference(value string) bool {
+	if len(value) < 1 || len(value) > 4000 || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if character < 32 || character == 127 {
+			return false
+		}
+	}
+	return true
 }

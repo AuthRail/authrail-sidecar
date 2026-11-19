@@ -3,7 +3,15 @@ package sidecar
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -249,5 +257,109 @@ func TestTrajectoryLedgerAppliesReviewedPriorActivityAndRejectsUnprovenEffects(t
 	EvaluationHandler(syncer, "abcdefghijklmnopqrstuvwxyz012345").ServeHTTP(response, httpRequest)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("unproven prior effects were accepted: %d", response.Code)
+	}
+}
+
+// The original call and current result keep their own bundle identities. Only
+// central Enforce retention may establish the cross-renewal link.
+func TestTrajectoryRenewalRequiresRetainedCurrentAuthority(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unavailable", true: "retained"}[accepted], func(t *testing.T) {
+			syncer := ledgerSynchronizer(t, "enforce")
+			read := ledgerStart(t, syncer)
+			newBundle := "00000000-0000-4000-8000-000000000099"
+			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := base64.RawURLEncoding.DecodeString(syncer.state.Current.Bundle.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest map[string]any
+			if json.Unmarshal(raw, &manifest) != nil {
+				t.Fatal("invalid fixture bundle")
+			}
+			manifest["bundleId"], manifest["sequence"] = newBundle, 2
+			raw, err = json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(raw)
+			signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			pin := sha256.Sum256(der)
+			config := *syncer.state.Current
+			signed := *config.Bundle
+			config.Bundle = &signed
+			signed.Payload, signed.Signature = base64.RawURLEncoding.EncodeToString(raw), base64.StdEncoding.EncodeToString(signature)
+			signed.VerificationKey.Base64, signed.VerificationKey.SHA256 = base64.StdEncoding.EncodeToString(der), hex.EncodeToString(pin[:])
+			config.Deployment.ActiveBundleID, config.Deployment.Sequence = &newBundle, 2
+			syncer.options.TrustedPins = map[string]struct{}{hex.EncodeToString(pin[:]): {}}
+			syncer.state.Current, syncer.state.Floor = &config, 2
+			read.Phase, read.Result = "tool_result", json.RawMessage(`{"status":"found"}`)
+			read.Trajectory.verified = true
+			evaluation, err := syncer.Evaluate(read)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := syncer.recordTrajectoryResultLocked(read, "invoice-123", evaluation); !errors.Is(err, errTrajectoryRenewal) {
+				t.Fatalf("cross-bundle result skipped central authority: %v", err)
+			}
+			if len(syncer.trajectoryState.Sessions[0].Results) != 0 {
+				t.Fatal("unproven result saved")
+			}
+			reports := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reports++
+				if r.URL.Path != "/runtime/deployment/observations" {
+					t.Error("unexpected remote path")
+				}
+				if !accepted {
+					w.WriteHeader(http.StatusConflict)
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"actionId":"00000000-0000-4000-8000-000000000020","certificateId":"00000000-0000-4000-8000-000000000021","replayed":false}`))
+			}))
+			defer upstream.Close()
+			syncer.options.ControlPlaneURL, syncer.options.Token, syncer.options.Client = upstream.URL, "deployment-token", upstream.Client()
+			result := ledgerDecision(t, syncer, read)
+			if reports != 1 {
+				t.Fatalf("unexpected retention count: %d", reports)
+			}
+			session := syncer.trajectoryState.Sessions[0]
+			if !accepted {
+				if result.Coverage != "unavailable" || !session.Gap || len(session.Results) != 0 {
+					t.Fatal("failed retention created history")
+				}
+				return
+			}
+			if result.RecordingStatus != "retained" || len(session.Results) != 1 || session.Gap {
+				t.Fatalf("retained result missing: %+v", result)
+			}
+			saved := session.Results[0]
+			if saved.BundleID != newBundle || saved.Sequence != 2 || saved.CallBundleID != bundleID || saved.CallSequence != 1 || saved.ResultCertificateID == "" {
+				t.Fatalf("historical bundles rewritten: %+v", saved)
+			}
+			restarted := &Synchronizer{options: syncer.options, state: syncer.state}
+			if err := restarted.loadTrajectoryLedgerLocked(); err != nil {
+				t.Fatalf("proven link lost on restart: %v", err)
+			}
+			changed := read
+			changed.Arguments = json.RawMessage(`{"amount":70}`)
+			if err := restarted.recordTrajectoryResultLocked(changed, "invoice-123", evaluation, saved.ResultCertificateID); err == nil {
+				t.Fatal("changed result reused retained link")
+			}
+			if err := restarted.recordTrajectoryResultLocked(read, "foreign-key", evaluation, saved.ResultCertificateID); err == nil {
+				t.Fatal("foreign business identity linked")
+			}
+		})
 	}
 }

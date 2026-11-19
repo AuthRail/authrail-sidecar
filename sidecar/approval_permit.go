@@ -126,10 +126,11 @@ func approvalPermitHandler(syncer *Synchronizer, adapterToken string, operation 
 				ActionID          string    `json:"actionId"`
 				ApprovalRequestID string    `json:"approvalRequestId"`
 				State             string    `json:"state"`
+				RequiresRefresh   *bool     `json:"requiresRefresh"`
 				ExpiresAt         time.Time `json:"expiresAt"`
 			}
 			if json.Unmarshal(raw, &status) != nil || status.ActionID != claim.ActionID || status.ApprovalRequestID != claim.ApprovalRequestID ||
-				!contains([]string{"pending", "approved", "rejected", "cancelled", "expired", "consumed"}, status.State) || status.ExpiresAt.IsZero() {
+				!contains([]string{"pending", "approved", "rejected", "cancelled", "expired", "consumed", "permit_issued", "superseded"}, status.State) || status.RequiresRefresh == nil || status.ExpiresAt.IsZero() {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}

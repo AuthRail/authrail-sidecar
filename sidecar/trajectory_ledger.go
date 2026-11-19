@@ -8,17 +8,22 @@ import (
 	"os"
 )
 
+var errTrajectoryRenewal = errors.New("trajectory result requires retained renewal authority")
+
 const maxTrajectorySessions = 128
 const maxTrajectoryResults = 256
 const maxTrajectoryLedgerBytes = 8 * 1024 * 1024
 
 type trajectoryReadResult struct {
-	RequestID          string `json:"requestId"`
-	ActionKey          string `json:"actionKey"`
-	OperationVersionID string `json:"operationVersionId"`
-	InputSHA256        string `json:"inputSha256"`
-	BundleID           string `json:"bundleId"`
-	Sequence           int64  `json:"sequence"`
+	RequestID           string `json:"requestId"`
+	ActionKey           string `json:"actionKey"`
+	OperationVersionID  string `json:"operationVersionId"`
+	InputSHA256         string `json:"inputSha256"`
+	BundleID            string `json:"bundleId"`
+	Sequence            int64  `json:"sequence"`
+	CallBundleID        string `json:"callBundleId,omitempty"`
+	CallSequence        int64  `json:"callSequence,omitempty"`
+	ResultCertificateID string `json:"resultCertificateId,omitempty"`
 }
 
 type trajectorySession struct {
@@ -105,7 +110,7 @@ func (s *Synchronizer) loadTrajectoryLedgerLocked() error {
 		derivedReads := make([]string, 0, len(session.Reads))
 		calls := make(map[string]trajectoryReadResult, len(session.Calls))
 		for _, call := range session.Calls {
-			if !validTrajectoryHook(call) {
+			if !validTrajectoryHook(call) || call.CallBundleID != "" || call.CallSequence != 0 || call.ResultCertificateID != "" {
 				return errors.New("trajectory history is invalid")
 			}
 			if _, duplicate := calls[call.RequestID]; duplicate {
@@ -120,7 +125,7 @@ func (s *Synchronizer) loadTrajectoryLedgerLocked() error {
 			call, exists := calls[result.RequestID]
 			if !exists || call.ActionKey != result.ActionKey ||
 				call.OperationVersionID != result.OperationVersionID ||
-				call.BundleID != result.BundleID || call.Sequence != result.Sequence {
+				!trajectoryResultBinding(call, result) {
 				return errors.New("trajectory history is invalid")
 			}
 			if _, duplicate := results[result.RequestID]; duplicate {
@@ -293,7 +298,7 @@ func (s *Synchronizer) markTrajectoryGapLocked(request EvaluationRequest) error 
 }
 
 func (s *Synchronizer) recordTrajectoryResultLocked(request EvaluationRequest,
-	actionKey string, evaluation Evaluation) error {
+	actionKey string, evaluation Evaluation, retainedCertificateID ...string) error {
 	if !evaluation.readResult && !evaluation.readCall {
 		return nil
 	}
@@ -336,12 +341,26 @@ func (s *Synchronizer) recordTrajectoryResultLocked(request EvaluationRequest,
 	}
 	var matchedCall bool
 	for _, previous := range session.Calls {
-		if previous.RequestID == request.RequestID && previous.ActionKey == actionKey &&
-			previous.OperationVersionID == request.OperationVersionID &&
-			previous.BundleID == value.BundleID && previous.Sequence == value.Sequence {
-			matchedCall = true
-			break
+		if previous.RequestID != request.RequestID || previous.ActionKey != actionKey || previous.OperationVersionID != request.OperationVersionID {
+			continue
 		}
+		matchedCall = true
+		if previous.BundleID != value.BundleID || previous.Sequence != value.Sequence {
+			// Only the central Enforce retention transaction proves the old call still
+			// has authority. The local bundle ID alone cannot establish equivalence.
+			if evaluation.Mode != "enforce" {
+				return errors.New("trajectory result configuration changed")
+			}
+			if len(retainedCertificateID) != 1 || !uuidPattern.MatchString(retainedCertificateID[0]) {
+				return errTrajectoryRenewal
+			}
+			if value.Sequence <= previous.Sequence || value.BundleID == previous.BundleID {
+				return errors.New("trajectory result configuration regressed")
+			}
+			value.CallBundleID, value.CallSequence = previous.BundleID, previous.Sequence
+			value.ResultCertificateID = retainedCertificateID[0]
+		}
+		break
 	}
 	if !matchedCall {
 		return errors.New("trajectory result has no matching call")
@@ -368,4 +387,12 @@ func (s *Synchronizer) recordTrajectoryResultLocked(request EvaluationRequest,
 	}
 	next.Sessions[index] = session
 	return s.saveTrajectoryLedgerLocked(next)
+}
+
+func trajectoryResultBinding(call, result trajectoryReadResult) bool {
+	if result.CallBundleID == "" && result.CallSequence == 0 && result.ResultCertificateID == "" {
+		return call.BundleID == result.BundleID && call.Sequence == result.Sequence
+	}
+	return result.CallBundleID == call.BundleID && result.CallSequence == call.Sequence &&
+		uuidPattern.MatchString(result.ResultCertificateID) && result.Sequence > call.Sequence && result.BundleID != call.BundleID
 }

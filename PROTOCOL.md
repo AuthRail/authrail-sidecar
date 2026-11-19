@@ -36,6 +36,15 @@ shape:
 }
 ```
 
+Current SDK/sidecar source also accepts optional `expectedBundle` with `bundleId`
+and positive `sequence`, taken from the preparation plans. A changed verified
+selection returns HTTP409 `{"code":"configuration_changed"}` before retaining a
+decision/report. The SDK may prepare again once from original input. It must not
+retry a business callback, execution start, arbitrary failure or uncertain effect.
+This expectation is denial-only and is excluded from the signed canonical input.
+Older published sidecars may reject this new field; use matching updated releases
+when published and never silently drop the fence to obtain a decision.
+
 The displayed times and signature are placeholders for the field shape, not a
 usable request. The live proof has a short validity window. The signed
 statement is `authrail.observe.executor.v1` and binds organisation and
@@ -269,3 +278,23 @@ invalidation does not grant permission. Complete client trajectories stay unveri
 rules needing complete history cannot pass without the future durable history owner.
 Each replica needs its own socket/volume and configured API monitor. No socket or
 file journal is shared as durable session/trajectory state.
+
+### Current approval freshness and provider references
+
+`POST /approval-permits/status` requires the existing signed exact Action/approval
+identity. Its safe response includes `state`, `expiresAt` and mandatory boolean
+`requiresRefresh`. States include `permit_issued` for a provably unused permission
+and `superseded` for a retained earlier review. Waiting does not expire a pending
+request; expiry describes supporting freshness. Status never claims permission.
+
+Execution receipts carry an optional opaque provider reference of at most4000 UTF-8
+bytes with no controls or surrounding whitespace. A start has no provider reference;
+reconciliation requires one. Provider idempotency keys keep their existing128-character
+restricted contract. Receipt envelopes are bounded32KiB to accommodate escaped
+reference bytes. References are evidence, never endpoints or new execution authority.
+
+For complete read history across renewal, only central Enforce retention may link
+the current result bundle to the original call bundle. Each remains recorded under
+its actual version with the retained result certificate. No equivalent-authority
+claim is inferred from labels or local IDs; Observe and unavailable retention fail
+closed. This never extends the original call/fact/permit expiry.
